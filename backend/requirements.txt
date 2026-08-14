@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+asyncpg
+pgvector
+sentence-transformers
+groq
+instructor
+python-dotenv
+pydantic
+pyyaml

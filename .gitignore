@@ -1,0 +1,16 @@
+# Root-level catch-all. backend/.gitignore and frontend/.gitignore cover their
+# own subtrees; this covers everything else (OS cruft, editor files, and any
+# stray env file created at the project root rather than in backend/frontend).
+.DS_Store
+Thumbs.db
+*.swp
+.env
+.env.local
+.env.*.local
+
+# scratch output from local verification runs
+backend/eval/last_run.json
+
+# tooling artifacts, not project source
+.claude/
+*.tsbuildinfo
