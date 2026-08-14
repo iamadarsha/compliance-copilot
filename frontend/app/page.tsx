@@ -49,8 +49,8 @@ export default function Home() {
         </div>
         <button
           onClick={() => setHistoryOpen((v) => !v)}
-          className="shrink-0 rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-dim
-                     transition-colors hover:border-zinc-600 hover:text-ink lg:hidden"
+          className="flex min-h-11 shrink-0 items-center rounded-md border border-line px-3.5
+                     text-xs text-ink-dim transition-colors hover:border-zinc-600 hover:text-ink lg:hidden"
           aria-expanded={historyOpen}
         >
           History {history.length > 0 && `(${history.length})`}
@@ -58,7 +58,7 @@ export default function Home() {
       </header>
 
       <div className="flex flex-1 flex-col gap-7 lg:flex-row lg:gap-8">
-        <main className="min-w-0 flex-1">
+        <main className="min-w-0 lg:flex-1">
           <QueryBox onResult={handleResult} />
 
           <div className="mt-6">

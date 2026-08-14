@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DocumentBase(BaseModel):
@@ -47,7 +47,20 @@ class IngestResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str
+    # No length bound at all was a real gap: an oversized question inflates
+    # every downstream Groq call's token cost (the raw question text goes
+    # straight into the prompt), and nothing server-side rejected a request
+    # sent directly to the API (bypassing the frontend's .trim() check) with
+    # an empty or whitespace-only question. 500 chars comfortably covers any
+    # real compliance question — the longest in the eval set is ~140.
+    question: str = Field(min_length=1, max_length=500)
+
+    @field_validator("question")
+    @classmethod
+    def _question_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("question must not be empty or whitespace-only")
+        return value
 
 
 class Citation(BaseModel):

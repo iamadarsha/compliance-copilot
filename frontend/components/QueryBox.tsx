@@ -89,7 +89,20 @@ export default function QueryBox({ onResult }: QueryBoxProps) {
           type="text"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            // Explicit rather than relying solely on native browser
+            // submit-on-Enter for a text input in a form: that behavior
+            // proved unreliable in testing (some browsers/environments
+            // don't trigger it from a synthetic or IME-composed keypress),
+            // and Enter-to-submit is basic enough behavior for a single-field
+            // form that leaving it to chance isn't acceptable.
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
           disabled={loading}
+          maxLength={500}
           placeholder="Ask about SEBI, NSE or MCX algo-trading obligations…"
           aria-label="Compliance question"
           className="field min-w-0 flex-1 rounded-lg border border-line bg-surface-1 px-3.5 py-2.5
