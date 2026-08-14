@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: compliance-copilot-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      # Set these in the Render dashboard after the Blueprint connects — never
+      # commit real values here. DATABASE_URL is the Neon connection string;
+      # GROQ_API_KEY is the (rotated) Groq key. CORS_ALLOW_ORIGINS is filled in
+      # once the Vercel frontend URL is known (see README deploy notes).
+      - key: DATABASE_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      # Non-secret, tuned in Phase 5's eval — safe to commit as a real default.
+      - key: SIMILARITY_THRESHOLD
+        value: "0.69"

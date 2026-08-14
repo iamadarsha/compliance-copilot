@@ -35,6 +35,9 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    # Local-dev-only: live reload on source edits. The image's own default
+    # CMD (no --reload, respects $PORT) is what ships to any real host.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
     image: node:20-slim
