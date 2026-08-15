@@ -402,7 +402,7 @@ def print_report(results: list[dict]) -> None:
         print(f"{'Layer 1 threshold-refused (no LLM)':<34}{len(thresh_lat):>4}"
               f"{sum(thresh_lat) / len(thresh_lat):>10.0f}{max(thresh_lat):>10}")
     if gen_lat:
-        print(f"{'Generated (Groq call)':<34}{len(gen_lat):>4}"
+        print(f"{'Generated (LLM call)':<34}{len(gen_lat):>4}"
               f"{sum(gen_lat) / len(gen_lat):>10.0f}{max(gen_lat):>10}")
     if thresh_lat and gen_lat:
         avg_t = sum(thresh_lat) / len(thresh_lat)
