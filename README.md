@@ -153,19 +153,28 @@ that is indistinguishable from a valid outcome is worse than a loud crash.* A cr
 gets fixed; this silently poisoned a metric, a UI, and my own reasoning about the
 system.
 
-**Provider failover.** Generation tries a five-tier Gemini cascade first —
-`gemini-3.5-flash-lite` → `gemini-3.5-flash` → `gemini-3.1-flash-lite` →
-`gemini-2.5-flash-lite` → `gemini-2.5-flash` — falling back to Groq only on a
-genuine `GenerationError`, never on a model's own `refused=true` (that is a
-correct result, not a failure to route around). Normal path: **2.24 s** for
-Gemini vs. **~10.9 s** for Groq. Measured worst case, forcing every Gemini
-model to genuinely hang rather than fail fast (the API host was
-DNS-blackholed inside the container, not simulated): **31.2 s** — two models
-each eating their full 15 s per-model timeout before the 25 s stage budget
-cuts the remaining three and hands off to Groq, which then answers normally.
-Both timeouts are deliberately tight for exactly this reason: a failover path
-that can take longer than the outage it exists to survive isn't a failover
-path.
+**Provider failover.** Generation tries Gemini (`gemini-3.5-flash-lite`) first,
+falling back to Groq only on a genuine `GenerationError`, never on a model's own
+`refused=true` (that is a correct result, not a failure to route around). Normal
+path: **2.24 s** for Gemini vs. **~10.9 s** for Groq. Measured worst case, forcing
+Gemini to genuinely hang rather than fail fast (the API host was DNS-blackholed
+inside the container, not simulated): **16.4 s** — the 15 s per-model timeout,
+then Groq answers normally. The timeout is deliberately tight for exactly this
+reason: a failover path that can take longer than the outage it exists to
+survive isn't a failover path.
+
+This was originally a five-tier Gemini cascade (`gemini-3.5-flash-lite` →
+`gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite` →
+`gemini-2.5-flash` → Groq), measured worst case **31.2 s**, simplified to the
+two tiers above after a closing review flagged it as disproportionate for a
+small internal tool. The two-tier design covers the failure mode actually
+observed in this build — provider-wide faults (a bad credential, a missing
+dependency, an outage) that one model and five models fail on identically —
+without adding resilience against a narrower scenario, a single specific model
+being unhealthy while its siblings are fine, that a low-traffic internal tool is
+unlikely to hit before Groq would have already answered. It also roughly halves
+the worst-case latency and leaves a smaller failover surface, which is easier to
+verify in the time a reviewer actually has for this file.
 
 Worth naming the bug found while building this, because it repeats a pattern
 already seen twice above (`Mode.TOOLS`, and generation-error-vs-refusal):

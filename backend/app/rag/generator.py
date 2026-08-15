@@ -11,7 +11,6 @@ the failure mode the refusal logic exists to prevent.
 import asyncio
 import logging
 import os
-import time
 from typing import NamedTuple
 
 import groq
@@ -23,53 +22,16 @@ logger = logging.getLogger(__name__)
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# Gemini cascade, tried in order before falling back to Groq. Every ID here was
-# checked against ai.google.dev's models/deprecations/pricing pages rather than
-# recalled — note there is NO "gemini-3.1-flash"; that generation ships only a
-# -lite flash variant, so it is absent by fact, not oversight.
-#
-# Ordering is cheapest-and-current first, then the same generation's fuller
-# model, then older generations. The premium 3.7/3.6 flash models are
-# deliberately excluded: the brief asks for small, cheap models, and a failover
-# path is the worst place to silently start spending more per query.
-GEMINI_MODELS = [
-    "gemini-3.5-flash-lite",  # current fast/cheap tier, no announced shutdown
-    "gemini-3.5-flash",  # same generation, more headroom
-    "gemini-3.1-flash-lite",  # older gen; retires 2027-05-07
-    "gemini-2.5-flash-lite",  # cheapest overall ($0.10/$0.40 per 1M)
-    "gemini-2.5-flash",  # 2.5 line is NOT deprecated; 2.0 was
-]
-GEMINI_MODEL = GEMINI_MODELS[0]
-
-# Hard ceiling on the entire Gemini stage, independent of how many models are
-# left to try. This is what keeps the cascade a failsafe rather than a new
-# source of latency: once the budget is spent the remaining models are skipped
-# and Groq — which is fast and already proven on this workload — takes over.
-# In practice the cascade gets through 1-2 models before handing off.
-GEMINI_TOTAL_BUDGET_SECONDS = float(os.environ.get("GEMINI_TOTAL_BUDGET_SECONDS", "25"))
-
-# Substrings marking a failure that will recur identically on every Gemini
-# model — a bad/absent credential, or the API not being enabled for the
-# project. Cascading through five models on one of these just multiplies the
-# same rejection, so the cascade short-circuits straight to Groq. Matching on
-# message text is admittedly brittle; it fails safe, since an unrecognised
-# error simply falls through to the normal per-model cascade.
-_GEMINI_FATAL_MARKERS = (
-    "api key not valid",
-    "api_key_invalid",
-    "unauthenticated",
-    "permission_denied",
-    "permission denied",
-    "consumer_suspended",
-    "has not been used in project",
-    "401",
-    "403",
-    # Client-side misconfiguration (e.g. a missing optional dependency) is
-    # every bit as model-independent as a bad credential. Learned the hard
-    # way: a missing `jsonref` made all five models fail in turn, four of
-    # those attempts pure waste.
-    "configurationerror",
-)
+# Single Gemini model, checked against ai.google.dev's models/deprecations/
+# pricing pages rather than recalled: current fast/cheap tier, no announced
+# shutdown. A five-tier same-provider cascade was tried and measured (worst
+# case 31.2s) before simplifying to this — see "Provider failover" in
+# README.md for the reasoning. The realistic failure mode observed in this
+# build is provider-wide (a bad credential, a missing dependency, an outage),
+# which one model or five both fail identically on; a single model plus the
+# Groq fallback covers that at half the worst-case latency, and a smaller
+# failover surface is easier to verify than a larger one.
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # Provider labels recorded against each query so it's visible after the fact
 # which provider actually served it.
@@ -292,21 +254,15 @@ def _build_groq_client() -> instructor.AsyncInstructor:
     )
 
 
-def _build_gemini_client(model: str) -> instructor.AsyncInstructor:
-    """Build an async instructor-wrapped Gemini client for one model."""
+def _build_gemini_client() -> instructor.AsyncInstructor:
+    """Build an async instructor-wrapped Gemini client."""
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise GenerationError("GEMINI_API_KEY is not set; cannot call the primary model.")
     kwargs: dict = {"async_client": True, "api_key": api_key}
     if _GEMINI_MODE_OVERRIDE:
         kwargs["mode"] = getattr(instructor.Mode, _GEMINI_MODE_OVERRIDE)
-    return instructor.from_provider(f"google/{model}", **kwargs)
-
-
-def _is_fatal_for_all_gemini(exc: Exception) -> bool:
-    """Whether this failure would recur identically on every other Gemini model."""
-    message = str(exc).lower()
-    return any(marker in message for marker in _GEMINI_FATAL_MARKERS)
+    return instructor.from_provider(f"google/{GEMINI_MODEL}", **kwargs)
 
 
 async def _create(
@@ -335,20 +291,18 @@ async def generate_groq(question: str, chunks: list[dict]) -> ComplianceAnswer:
         raise GenerationError(f"{type(exc).__name__}: {exc}") from exc
 
 
-async def generate_gemini(
-    question: str, chunks: list[dict], model: str = GEMINI_MODEL
-) -> ComplianceAnswer:
-    """Answer via one Gemini model. Raises GenerationError on provider failure.
+async def generate_gemini(question: str, chunks: list[dict]) -> ComplianceAnswer:
+    """Answer via Gemini. Raises GenerationError on any provider-level failure.
 
     The call is wrapped in a hard asyncio timeout rather than relying on the
     SDK's own: it bounds the request provider-agnostically, and gives a clean
     lever (GEMINI_TIMEOUT_SECONDS) for exercising the failover path in tests
     without needing to invalidate a real credential.
     """
-    client = _build_gemini_client(model)
+    client = _build_gemini_client()
     try:
         return await asyncio.wait_for(
-            _create(client, model, _build_user_message(question, chunks)),
+            _create(client, GEMINI_MODEL, _build_user_message(question, chunks)),
             timeout=GEMINI_TIMEOUT_SECONDS,
         )
     except GenerationError:
@@ -357,60 +311,6 @@ async def generate_gemini(
         raise GenerationError(f"timed out after {GEMINI_TIMEOUT_SECONDS}s") from exc
     except Exception as exc:  # noqa: BLE001 - normalized into one failure type
         raise GenerationError(f"{type(exc).__name__}: {exc}") from exc
-
-
-async def generate_gemini_cascade(question: str, chunks: list[dict]) -> GenerationResult:
-    """Try each Gemini model in turn, newest/cheapest first.
-
-    Cascading across models is worth doing because the realistic Gemini failure
-    is per-model, not account-wide: quota is metered per model, and an
-    individual model can be overloaded or retired while its siblings are fine.
-    It is NOT worth doing for a bad credential, which every model rejects
-    identically — hence the fatal-error short-circuit.
-
-    Bounded twice over (per-model timeout and a total stage budget) so that a
-    slow cascade can never cost more than going straight to the fallback would
-    have saved.
-
-    Raises:
-        GenerationError: every Gemini model failed, the budget ran out, or the
-            first failure was one that all models would share.
-    """
-    stage_started = time.monotonic()
-    last_error: Exception | None = None
-
-    for index, model in enumerate(GEMINI_MODELS):
-        elapsed = time.monotonic() - stage_started
-        if index > 0 and elapsed >= GEMINI_TOTAL_BUDGET_SECONDS:
-            logger.warning(
-                "Gemini stage budget of %.0fs exhausted after %.1fs; skipping "
-                "remaining %d model(s) and handing off",
-                GEMINI_TOTAL_BUDGET_SECONDS,
-                elapsed,
-                len(GEMINI_MODELS) - index,
-            )
-            break
-
-        try:
-            answer = await generate_gemini(question, chunks, model)
-        except GenerationError as exc:
-            last_error = exc
-            if _is_fatal_for_all_gemini(exc):
-                logger.warning(
-                    "gemini/%s failed with an account-level fault (%s); skipping the "
-                    "remaining Gemini models since they would fail identically",
-                    model,
-                    exc,
-                )
-                break
-            logger.warning("gemini/%s failed (%s); trying next Gemini model", model, exc)
-            continue
-
-        if index > 0:
-            logger.info("gemini/%s served the request after %d earlier failure(s)", model, index)
-        return GenerationResult(answer, f"gemini/{model}")
-
-    raise GenerationError(f"all Gemini models failed; last error: {last_error}")
 
 
 def _enforce_citation_consistency(answer: ComplianceAnswer) -> ComplianceAnswer:
@@ -462,13 +362,13 @@ async def generate(question: str, chunks: list[dict]) -> GenerationResult:
         GenerationError: both providers failed at the provider level.
     """
     try:
-        gemini_result = await generate_gemini_cascade(question, chunks)
+        gemini_answer = await generate_gemini(question, chunks)
         return GenerationResult(
-            _enforce_citation_consistency(gemini_result.answer), gemini_result.provider
+            _enforce_citation_consistency(gemini_answer), GEMINI_PROVIDER
         )
     except GenerationError as gemini_exc:
         logger.warning(
-            "Every Gemini model failed (%s); falling back to %s",
+            "Gemini failed (%s); falling back to %s",
             gemini_exc,
             GROQ_PROVIDER,
         )
