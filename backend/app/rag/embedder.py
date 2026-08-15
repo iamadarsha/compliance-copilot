@@ -49,11 +49,17 @@ def _ensure_model_files() -> None:
 
 _ensure_model_files()
 
-# Kept for the same reason as before — a large single-batch inference call
-# has a bigger transient memory footprint than several smaller ones, and
-# ingest's whole-corpus embed is a one-off, not latency-sensitive path where
-# that tradeoff matters.
-_ENCODE_BATCH_SIZE = 8
+# Kept small for the same reason as before, re-measured for this runtime:
+# a real /ingest run against actual (long) document chunks — not short
+# synthetic test strings — spiked resident memory by ~180MB mid-request and
+# reliably OOM-killed the container under Render's 512MB ceiling, even
+# though the ONNX session itself is flat across repeated calls in isolation.
+# ONNX inference cost scales with batch_size x sequence_length^2 for
+# attention, and this corpus's real chunks run close to the 512-token
+# truncation ceiling — batching several of those together is what spikes.
+# Ingest is a one-off, not a latency-sensitive path, so paying more wall
+# time for a smaller footprint here costs nothing that matters.
+_ENCODE_BATCH_SIZE = 2
 
 # Loaded once at import time so they stay warm across requests.
 _tokenizer = Tokenizer.from_file(str(_MODEL_DIR / "tokenizer.json"))
@@ -69,6 +75,14 @@ _tokenizer.enable_truncation(max_length=512)
 _session_options = ort.SessionOptions()
 _session_options.intra_op_num_threads = 1
 _session_options.inter_op_num_threads = 1
+# Both default to on, and both trade memory for speed by caching allocations
+# across calls rather than returning them to the OS: the arena keeps a
+# growable memory pool, and mem-pattern caches per-shape allocation plans.
+# Neither cost is worth paying on a host where the failure mode isn't
+# "somewhat slower" but "OOM-killed" — same tradeoff as pinning batch size
+# down for the same request.
+_session_options.enable_cpu_mem_arena = False
+_session_options.enable_mem_pattern = False
 _session = ort.InferenceSession(
     str(_MODEL_DIR / "model.onnx"), sess_options=_session_options, providers=["CPUExecutionProvider"]
 )
