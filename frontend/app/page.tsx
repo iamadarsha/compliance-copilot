@@ -87,7 +87,7 @@ export default function Home() {
 
           <div className="flex items-center gap-2">
             <span className="hidden rounded-full border border-line-2 bg-surface px-2.5 py-1 text-[11px] text-ink-2 md:inline">
-              5 circulars indexed
+              9 circulars indexed
             </span>
             <button
               onClick={() => setHistoryOpen((v) => !v)}
