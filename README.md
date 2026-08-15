@@ -146,6 +146,48 @@ that is indistinguishable from a valid outcome is worse than a loud crash.* A cr
 gets fixed; this silently poisoned a metric, a UI, and my own reasoning about the
 system.
 
+**Provider failover.** Generation tries a five-tier Gemini cascade first —
+`gemini-3.5-flash-lite` → `gemini-3.5-flash` → `gemini-3.1-flash-lite` →
+`gemini-2.5-flash-lite` → `gemini-2.5-flash` — falling back to Groq only on a
+genuine `GenerationError`, never on a model's own `refused=true` (that is a
+correct result, not a failure to route around). Normal path: **2.24 s** for
+Gemini vs. **~10.9 s** for Groq. Measured worst case, forcing every Gemini
+model to genuinely hang rather than fail fast (the API host was
+DNS-blackholed inside the container, not simulated): **31.2 s** — two models
+each eating their full 15 s per-model timeout before the 25 s stage budget
+cuts the remaining three and hands off to Groq, which then answers normally.
+Both timeouts are deliberately tight for exactly this reason: a failover path
+that can take longer than the outage it exists to survive isn't a failover
+path.
+
+Worth naming the bug found while building this, because it repeats a pattern
+already seen twice above (`Mode.TOOLS`, and generation-error-vs-refusal):
+instructor's Gemini structured output needs the `jsonref` package, which only
+the `instructor[google-genai]` extra installs — a bare `google-genai` pin
+does not pull it in. Every Gemini model call raised `ConfigurationError`
+silently, the cascade fell through to Groq on every single request, and Groq
+produced a fully correct-looking answer under a provider path that was never
+actually exercised. The only reason this was caught rather than shipped is
+the `provider` field recorded on every stored query — without it, this would
+have read as "Gemini works." This is now the third bug in this build with
+the identical shape: a failure state indistinguishable from success until
+something explicitly logs which path actually ran. That repetition, not any
+one instance of it, is the real finding — a system's failure modes deserve
+exactly as much verification effort as its success path, because they hide
+behind the same-looking output.
+
+Once Gemini was actually running, its behavior on the two hardest-won edge
+cases in this build differed from Groq's — not just in speed. On the
+password-complexity question below, it never fabricated across five runs
+(Groq's pre-fix rate was 40%). On the MCX Milestone 2 question, it cited MCX
+alone across four runs, with no unexplained cross-issuer co-citation — the
+exact failure three separate Groq prompt revisions couldn't resolve. Neither
+result came from a prompt change; the shared system prompt is byte-identical
+across both providers. That means part of what looked like a hard
+prompt-design problem in this build was actually model-specific — worth
+knowing before assuming the next round of prompt iteration is always the
+right lever to pull.
+
 **Known limitation — citation scoping across issuers.** Asked "what is Milestone 2
 according to the MCX circular", the system returns the correct MCX provision (mock
 session by 3 January 2026) using MCX's own numbering rather than SEBI's — the important
@@ -166,6 +208,27 @@ explicit specific-value check with two worked examples in *different* domains
 pattern rather than "password questions → refuse". Post-fix, 3 of 3 genuine responses
 refused correctly — but **n=3 is too small to claim a rate**, and repeated attempts at a
 10-run measurement were blocked by the free-tier daily token cap.
+
+Later, testing this against Gemini (see "Provider failover" above) surfaced the same
+underlying pattern wearing a different mask: 5/5 Gemini runs correctly stated in prose
+that the documents don't specify a complexity rule, yet still returned `refused: false,
+confidence: "high"` — never fabricated, but structurally overconfident about its own
+citation. The mitigation built for this is a `Citation.role: "primary" | "contrast"`
+field plus a provider-agnostic post-generation check: if `refused=false` but no citation
+is marked `"primary"`, force `refused=true, confidence="low"` and append a note. Applied
+identically after either provider returns, reading only the structured `role` field — no
+prose parsing. Measured result: **2 of 5** corrected, because the model marked its only
+citation `"contrast"` (or gave none) and the check caught the mismatch. The other
+**3 of 5** were not caught, and the reason is exact rather than mysterious: in those runs
+the model labeled the *same* non-answering citation `"primary"` — the identical
+overconfidence that produced `refused=false` also produced a `role` label that agrees
+with it, so the two fields never disagree and there is nothing for a consistency check
+to catch. This is a structural ceiling on consistency checks generally, not a bug worth
+chasing further: a check that compares two fields the model fills in from the same
+underlying judgment can only catch cases where that judgment produces inconsistent
+output, not cases where it is confidently, consistently wrong. Iteration here was
+deliberately stopped once this ceiling was identified — the same call made for the
+citation-scoping limitation above.
 
 ### Production changes
 
