@@ -8,10 +8,19 @@ services:
     healthCheckPath: /health
     envVars:
       # Set these in the Render dashboard after the Blueprint connects — never
-      # commit real values here. DATABASE_URL is the Neon connection string;
-      # GROQ_API_KEY is the (rotated) Groq key. CORS_ALLOW_ORIGINS is filled in
-      # once the Vercel frontend URL is known (see README deploy notes).
+      # commit real values here. DATABASE_URL is the Neon connection string.
+      # CORS_ALLOW_ORIGINS is filled in once the Vercel frontend URL is known
+      # (see README deploy notes).
+      #
+      # BOTH provider keys are required. Generation is Gemini-primary with Groq
+      # as failover, so a missing GEMINI_API_KEY does not fail loudly — every
+      # request just errors on the credential and falls through to Groq,
+      # producing correct-looking answers from a provider path nobody intended.
+      # That exact failure happened once during development and was only caught
+      # by the `provider` field logged on each query.
       - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false
       - key: GROQ_API_KEY
         sync: false

@@ -13,14 +13,25 @@ The Next.js frontend holds no backend logic — every request that needs data or
 ## Backend layout
 
 - `app/routers/ingest.py` — ingests the markdown source documents in `backend/docs/`.
-- `app/routers/query.py` — answers a question via retrieval + generation.
+- `app/routers/query.py` — answers a question: retrieval, the two-layer refusal gate, then generation.
+- `app/routers/documents.py` — lists the indexed corpus, so the UI renders it from the database rather than a hardcoded list.
 - `app/rag/chunker.py` — splits a document's markdown body into section-aware chunks.
-- `app/rag/embedder.py` — embeds chunks/queries with a local sentence-transformers model.
+- `app/rag/embedder.py` — embeds chunks/queries locally via ONNX Runtime (`bge-small-en-v1.5`).
 - `app/rag/retriever.py` — cosine-similarity search over `chunks.embedding` via pgvector.
-- `app/rag/generator.py` — calls the Groq-hosted LLM to produce a cited answer from retrieved chunks.
+- `app/rag/generator.py` — produces a cited answer, Gemini-primary with Groq failover, and applies the citation-consistency check.
+- `app/rag/meta.py` — answers questions about the assistant itself ("what can you do?") deterministically from the `documents` table, only for questions retrieval was already going to refuse.
 - `app/db/` — connection/session management and row-shape definitions for the schema below.
 
-All of the above are currently stubs (function signatures + docstrings only); implementation comes in later phases.
+## Query path
+
+1. Retrieve the top-6 chunks by cosine similarity.
+2. **Layer 1** — if the top score is below the tuned threshold (0.69), skip the model
+   entirely. Before refusing, check whether the question is *about the assistant* and, if
+   so, answer it from the `documents` table.
+3. **Layer 2** — otherwise generate, and let the model refuse if the retrieved text does
+   not actually support an answer.
+4. Post-generation, an answer claiming `refused=false` without a `primary` citation is
+   downgraded to a cautious refusal rather than presented as confident.
 
 ## Data model
 
@@ -30,4 +41,11 @@ All of the above are currently stubs (function signatures + docstrings only); im
 
 ## Evaluation
 
-`backend/eval/` holds a test set (`test_set.json`) of question/expected-answer pairs and a runner (`run_eval.py`) that will exercise the `/query` endpoint once retrieval and generation are implemented.
+`backend/eval/` holds a test set (`test_set.json`) of 10 question/expected-answer pairs — 6
+answerable, 4 deliberately not — and a runner (`run_eval.py`) that exercises the `/query`
+endpoint and reports retrieval hit rate, citation accuracy, refusal accuracy split by which
+layer fired, and a similarity distribution used to tune the threshold. Run it with:
+
+```bash
+docker compose exec backend python -m eval.run_eval
+```
