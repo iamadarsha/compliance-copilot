@@ -69,6 +69,15 @@ class Citation(BaseModel):
     section: str = Field(
         description="The section label of the chunk used, copied exactly from its SECTION field (e.g. '7', 'B', 'Annexure')."
     )
+    role: Literal["primary", "contrast"] = Field(
+        description=(
+            "'primary' if this chunk directly states the specific fact, value, or rule the "
+            "question asked for. 'contrast' if the chunk is genuinely on-topic and worth "
+            "citing but does NOT itself supply that specific value — e.g. it confirms a "
+            "control exists without giving the control's parameters. Never mark a citation "
+            "'primary' merely because it is topically related to the question."
+        )
+    )
 
 
 class ComplianceAnswer(BaseModel):

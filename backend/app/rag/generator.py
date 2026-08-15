@@ -210,6 +210,18 @@ from it, leave it out. In particular, when the question is scoped to one issuer'
 document, do not cite a different issuer's document as a source for that issuer's \
 provision; cite it only if you are explicitly contrasting the two, and say so in the answer.
 
+Each citation also carries a ROLE. Mark it "primary" if that chunk directly states the \
+specific fact, value, or rule the question asked for. Mark it "contrast" if the chunk is \
+genuinely on-topic and worth citing but does NOT itself supply that specific value — the \
+password-protection example in rule 7 is exactly this case: a chunk confirming that \
+password protection and expiry exist is "contrast" for a question about complexity \
+requirements, because it establishes the topic without stating the requirement asked for. \
+Never mark a citation "primary" merely because it is topically related. If every citation \
+you would give for an answer is "contrast" — none of them state the specific thing asked \
+— that is the same signal as rule 7's specific-value check and means refused must be true, \
+not false. A "contrast"-only citation list is not evidence that you have answered the \
+question; it is evidence that you have not.
+
 CONFIDENCE. "high" = the context states the answer directly and unambiguously. \
 "medium" = supported but requiring synthesis across documents, or a relevant referenced \
 document is missing. "low" = only tangentially supported, or refused.
@@ -404,6 +416,39 @@ async def generate_gemini_cascade(question: str, chunks: list[dict]) -> Generati
     raise GenerationError(f"all Gemini models failed; last error: {last_error}")
 
 
+def _enforce_citation_consistency(answer: ComplianceAnswer) -> ComplianceAnswer:
+    """Structural backstop: refused=false with no primary citation is a
+    self-contradictory answer, corrected here rather than trusted.
+
+    Provider-agnostic and prose-free by construction — it reads only the
+    structured `role` field, never the answer text. Found via q5 (the
+    password-complexity question): Gemini set refused=false/confidence=high
+    while citing only a chunk that confirmed the topic without stating the
+    value asked for. An empty citations list fails the same check (any() over
+    [] is False), so this one rule also covers that simpler failure mode
+    without a separate empty-list branch.
+    """
+    if answer.refused:
+        return answer
+    if any(c.role == "primary" for c in answer.citations):
+        return answer
+
+    logger.warning(
+        "refused=false with no primary citation (%d citation(s), all contrast); "
+        "forcing refused=True",
+        len(answer.citations),
+    )
+    return answer.model_copy(
+        update={
+            "refused": True,
+            "confidence": "low",
+            "answer": answer.answer
+            + "\n\n(Note: no supporting citation was returned for this answer — "
+            "treat with caution.)",
+        }
+    )
+
+
 async def generate(question: str, chunks: list[dict]) -> GenerationResult:
     """Produce a grounded, cited answer, falling back across providers.
 
@@ -420,7 +465,10 @@ async def generate(question: str, chunks: list[dict]) -> GenerationResult:
         GenerationError: both providers failed at the provider level.
     """
     try:
-        return await generate_gemini_cascade(question, chunks)
+        gemini_result = await generate_gemini_cascade(question, chunks)
+        return GenerationResult(
+            _enforce_citation_consistency(gemini_result.answer), gemini_result.provider
+        )
     except GenerationError as gemini_exc:
         logger.warning(
             "Every Gemini model failed (%s); falling back to %s",
@@ -437,7 +485,7 @@ async def generate(question: str, chunks: list[dict]) -> GenerationResult:
             )
             raise
         logger.info("Fallback provider %s served the request", GROQ_PROVIDER)
-        return GenerationResult(answer, GROQ_PROVIDER)
+        return GenerationResult(_enforce_citation_consistency(answer), GROQ_PROVIDER)
 
 
 async def generate_answer(question: str, chunks: list[dict]) -> ComplianceAnswer:
