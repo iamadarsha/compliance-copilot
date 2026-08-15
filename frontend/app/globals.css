@@ -1,21 +1,47 @@
 @import "tailwindcss";
 
-/* Dark translation of the Finance-News-Analyser visual register: restrained
-   neutrals, small radii, muted semantic tints (never neon), Apple system stack.
-   The reference repo is light-themed; these are its conventions inverted. */
+/* Design language borrowed from iamadarsha/Finance-News-Analyser: light Apple-
+   style canvas (#F5F5F7), white surfaces, hairline rgba borders rather than
+   heavy shadows, small type, tight negative tracking on headings and wide
+   positive tracking on uppercase micro-labels. Airbnb's contribution is the
+   generosity — a pill search bar with real elevation, roomier padding, larger
+   radii and touch targets. */
 @theme {
-  --color-surface-0: #09090b;
-  --color-surface-1: #111113;
-  --color-surface-2: #17171a;
-  --color-line: #26262b;
-  --color-line-soft: #1d1d21;
-  --color-ink: #ededf0;
-  --color-ink-dim: #a1a1aa;
-  --color-ink-faint: #6e6e78;
-  --color-accent: #3b82f6;
+  --color-canvas: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-surface-2: #fafafa;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
-    Arial, sans-serif;
+  --color-line: rgba(0, 0, 0, 0.08);
+  --color-line-2: #e8e8ed;
+
+  --color-ink: #1d1d1f;
+  --color-ink-2: #6e6e73;
+  --color-ink-3: #9ca3af;
+  --color-ink-4: #c0bfc4;
+
+  --color-accent: #007aff;
+  --color-accent-dark: #0062cc;
+
+  /* Confidence + state tints. Deliberately desaturated: a compliance tool
+     should read as calm and factual, never like a dashboard alert. */
+  --color-good-ink: #0e7c4a;
+  --color-good-bg: #ecf8f2;
+  --color-good-line: #cbebda;
+
+  --color-warn-ink: #a96a0d;
+  --color-warn-bg: #fff9ed;
+  --color-warn-line: #f3e2c0;
+
+  --color-bad-ink: #c0392b;
+  --color-bad-bg: #fdf1ef;
+  --color-bad-line: #f6d8d2;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+  --shadow-search: 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 20px rgba(0, 0, 0, 0.06);
+  --shadow-search-lift: 0 1px 2px rgba(0, 0, 0, 0.05), 0 10px 30px rgba(0, 0, 0, 0.1);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", Arial, sans-serif;
   --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -26,15 +52,22 @@ html {
 }
 
 body {
-  background: var(--color-surface-0);
+  background: var(--color-canvas);
   color: var(--color-ink);
 }
 
-/* Focus ring, mirroring the reference's accent-tinted input focus */
-.field:focus {
-  outline: none;
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgb(59 130 246 / 0.15);
+/* Apple's translucent chrome, used on the sticky header. */
+.chrome-blur {
+  background: rgba(245, 245, 247, 0.82);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* The search pill lifts on focus rather than drawing a hard ring — softer, and
+   it survives being placed on either the canvas or a white card. */
+.search-shell:focus-within {
+  box-shadow: var(--shadow-search-lift);
+  border-color: rgba(0, 0, 0, 0.12);
 }
 
 .scroll-thin::-webkit-scrollbar {
@@ -44,14 +77,14 @@ body {
   background: transparent;
 }
 .scroll-thin::-webkit-scrollbar-thumb {
-  background: rgb(255 255 255 / 0.12);
+  background: rgba(0, 0, 0, 0.14);
   border-radius: 2px;
 }
 
 @keyframes fade-rise {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -59,11 +92,27 @@ body {
   }
 }
 .fade-rise {
-  animation: fade-rise 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  animation: fade-rise 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.pulse-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fade-rise {
+  .fade-rise,
+  .pulse-dot {
     animation: none;
   }
 }

@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import AnswerCard, { type ComplianceAnswer } from "@/components/AnswerCard";
-import QueryBox from "@/components/QueryBox";
+import QueryBox, { type Prefill } from "@/components/QueryBox";
 
 type HistoryEntry = {
   id: number;
@@ -11,16 +11,48 @@ type HistoryEntry = {
   result: ComplianceAnswer;
 };
 
-/** Small status dot mirroring the answer's outcome, for the history list. */
+// Every example is verified to clear the 0.69 retrieval threshold (scores
+// 0.71 / 0.74 / 0.76) — an example that lands in a refusal would make a
+// working system look broken to anyone trying it for the first time.
+// "Who counts as 'family'?" alone scores 0.56 and is deliberately NOT used.
+const EXAMPLES = [
+  "Max orders per second?",
+  "Who counts as 'family' for sharing a registered algo?",
+  "When does it apply to all brokers?",
+];
+
+/** Status dot mirroring the answer's outcome, for the history rail. */
 function OutcomeDot({ result }: { result: ComplianceAnswer }) {
   const tone = result.refused
-    ? "bg-amber-400"
+    ? "bg-warn-ink"
     : result.confidence === "high"
-      ? "bg-emerald-400"
+      ? "bg-good-ink"
       : result.confidence === "medium"
-        ? "bg-amber-400"
-        : "bg-red-400";
-  return <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${tone}`} aria-hidden />;
+        ? "bg-warn-ink"
+        : "bg-bad-ink";
+  return <span className={`mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full ${tone}`} aria-hidden />;
+}
+
+function Logo() {
+  return (
+    <span
+      aria-hidden
+      className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-white"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M12 3l7 3v5.5c0 4.6-3 8-7 9.5-4-1.5-7-4.9-7-9.5V6z" />
+        <path d="M9 12l2 2 4-4" />
+      </svg>
+    </span>
+  );
 }
 
 export default function Home() {
@@ -28,7 +60,8 @@ export default function Home() {
   // every query, and browsing past sessions is outside this assignment's scope.
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [prefill, setPrefill] = useState<Prefill | null>(null);
 
   function handleResult(question: string, result: ComplianceAnswer) {
     const entry: HistoryEntry = { id: Date.now(), question, result };
@@ -39,92 +72,141 @@ export default function Home() {
   const selected = history.find((h) => h.id === selectedId) ?? history[0] ?? null;
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-5 py-8 lg:px-8">
-      <header className="mb-7 flex items-baseline justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-ink">Compliance Copilot</h1>
-          <p className="mt-1 text-[13px] text-ink-dim">
-            Grounded answers on retail algorithmic trading, cited to SEBI, NSE and MCX circulars.
-          </p>
+    <div className="min-h-screen">
+      <header className="chrome-blur sticky top-0 z-20 border-b border-line">
+        <div className="mx-auto flex min-h-[60px] max-w-[1080px] items-center justify-between gap-3 px-5 sm:px-7">
+          <div className="flex items-center gap-2.5">
+            <Logo />
+            <h1 className="text-[16px] font-semibold tracking-[-0.02em] text-ink">
+              Compliance Copilot
+            </h1>
+            <span className="hidden text-[12px] text-ink-3 sm:inline">
+              SEBI · NSE · MCX
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="hidden rounded-full border border-line-2 bg-surface px-2.5 py-1 text-[11px] text-ink-2 md:inline">
+              5 circulars indexed
+            </span>
+            <button
+              onClick={() => setHistoryOpen((v) => !v)}
+              aria-expanded={historyOpen}
+              className="flex min-h-9 items-center rounded-full border border-line-2 bg-surface px-3.5
+                         text-[12px] font-medium text-ink-2 transition-colors hover:border-ink-4
+                         hover:text-ink lg:hidden"
+            >
+              History{history.length > 0 && ` (${history.length})`}
+            </button>
+          </div>
         </div>
-        <button
-          onClick={() => setHistoryOpen((v) => !v)}
-          className="flex min-h-11 shrink-0 items-center rounded-md border border-line px-3.5
-                     text-xs text-ink-dim transition-colors hover:border-zinc-600 hover:text-ink lg:hidden"
-          aria-expanded={historyOpen}
-        >
-          History {history.length > 0 && `(${history.length})`}
-        </button>
       </header>
 
-      <div className="flex flex-1 flex-col gap-7 lg:flex-row lg:gap-8">
-        <main className="min-w-0 lg:flex-1">
-          <QueryBox onResult={handleResult} />
+      <div className="mx-auto max-w-[1240px] px-5 pb-20 pt-10 sm:px-7 sm:pt-14">
+        {/* Hero — collapses once there's an answer, so results lead the page. */}
+        {!selected && (
+          <div className="mx-auto mb-8 max-w-2xl text-center">
+            <h2 className="text-[28px] font-semibold leading-[1.15] tracking-[-0.03em] text-ink sm:text-[34px]">
+              Answers from the circulars,
+              <br className="hidden sm:block" /> never from guesswork.
+            </h2>
+            <p className="mx-auto mt-3.5 max-w-lg text-[15px] leading-relaxed text-ink-2">
+              Ask about retail algorithmic trading obligations. Every answer is grounded in
+              the loaded SEBI, NSE and MCX circulars and cited to a section — questions the
+              documents don&apos;t cover are declined rather than guessed.
+            </p>
+          </div>
+        )}
 
-          <div className="mt-6">
+        {/* Three columns on desktop: an empty spacer mirroring the history rail
+            keeps the centre column optically centred on the page, so the search
+            bar, answer card and example chips all share one axis. Without it
+            the aside drags everything left of the hero above it. */}
+        <div className="flex flex-col gap-8 lg:flex-row lg:justify-center lg:gap-8">
+          <div className="hidden w-[260px] shrink-0 lg:block" aria-hidden />
+
+          <main className="w-full min-w-0 lg:w-[640px] lg:shrink-0">
+            <QueryBox onResult={handleResult} prefill={prefill} />
+
+            <div className="mt-8">
             {selected ? (
               <>
-                <p className="mb-3 text-[13px] text-ink-dim">
-                  <span className="text-ink-faint">Question · </span>
+                <p className="mb-3.5 text-[13px] leading-relaxed text-ink-2">
+                  <span className="font-medium uppercase tracking-[0.07em] text-ink-3">
+                    Question ·{" "}
+                  </span>
                   {selected.question}
                 </p>
                 <AnswerCard result={selected.result} />
               </>
             ) : (
-              <div className="rounded-lg border border-dashed border-line px-5 py-10 text-center">
-                <p className="text-[13px] text-ink-dim">
-                  Ask a question to get started.
+              <div>
+                <p className="mb-3 text-center text-[11px] font-semibold uppercase tracking-[0.09em] text-ink-3">
+                  Try one
                 </p>
-                <p className="mx-auto mt-2 max-w-md text-[13px] leading-relaxed text-ink-faint">
-                  Every answer is drawn only from the loaded circulars. Questions the
-                  documents don&apos;t cover are declined rather than guessed.
-                </p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {EXAMPLES.map((example) => (
+                    <button
+                      key={example}
+                      onClick={() => setPrefill({ value: example, key: Date.now() })}
+                      className="rounded-full border border-line-2 bg-surface px-4 py-2.5 text-[13px]
+                                 text-ink-2 shadow-sm transition-all hover:-translate-y-px
+                                 hover:border-ink-4 hover:text-ink"
+                    >
+                      {example}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
-          </div>
-        </main>
+            </div>
+          </main>
 
-        <aside
-          className={`w-full shrink-0 lg:block lg:w-72 ${historyOpen ? "block" : "hidden"}`}
-          aria-label="Session history"
-        >
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-              This session
-            </h2>
-            {history.length > 0 && (
-              <span className="text-[11px] text-ink-faint">{history.length}</span>
-            )}
-          </div>
+          <aside
+            className={`w-full shrink-0 lg:block lg:w-[260px] ${historyOpen ? "block" : "hidden"}`}
+            aria-label="Session history"
+          >
+            <div className="rounded-2xl border border-line bg-surface p-4">
+              <div className="mb-3 flex items-baseline justify-between">
+                <h2 className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-3">
+                  This session
+                </h2>
+                {history.length > 0 && (
+                  <span className="text-[11px] tabular-nums text-ink-3">{history.length}</span>
+                )}
+              </div>
 
-          {history.length === 0 ? (
-            <p className="mt-3 text-[13px] leading-relaxed text-ink-faint">
-              Questions you ask will be listed here. History is not persisted across reloads.
-            </p>
-          ) : (
-            <ul className="scroll-thin mt-3 max-h-[60vh] space-y-1 overflow-y-auto pr-1">
-              {history.map((entry) => {
-                const active = entry.id === selected?.id;
-                return (
-                  <li key={entry.id}>
-                    <button
-                      onClick={() => setSelectedId(entry.id)}
-                      className={`flex w-full items-start gap-2 rounded-md border px-2.5 py-2
-                                  text-left text-[13px] leading-snug transition-colors ${
-                                    active
-                                      ? "border-line bg-surface-2 text-ink"
-                                      : "border-transparent text-ink-dim hover:bg-surface-1 hover:text-ink"
-                                  }`}
-                    >
-                      <OutcomeDot result={entry.result} />
-                      <span className="line-clamp-2 min-w-0">{entry.question}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </aside>
+              {history.length === 0 ? (
+                <p className="text-[12.5px] leading-relaxed text-ink-3">
+                  Questions you ask will be listed here. History isn&apos;t persisted across
+                  reloads.
+                </p>
+              ) : (
+                <ul className="scroll-thin -mr-1 max-h-[58vh] space-y-0.5 overflow-y-auto pr-1">
+                  {history.map((entry) => {
+                    const active = entry.id === selected?.id;
+                    return (
+                      <li key={entry.id}>
+                        <button
+                          onClick={() => setSelectedId(entry.id)}
+                          className={`flex w-full items-start gap-2.5 rounded-xl px-3 py-2.5 text-left
+                                      text-[12.5px] leading-snug transition-colors ${
+                                        active
+                                          ? "bg-canvas font-medium text-ink"
+                                          : "text-ink-2 hover:bg-canvas hover:text-ink"
+                                      }`}
+                        >
+                          <OutcomeDot result={entry.result} />
+                          <span className="line-clamp-2 min-w-0">{entry.question}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </aside>
+        </div>
       </div>
     </div>
   );

@@ -6,11 +6,10 @@ export const metadata: Metadata = {
   description: "RAG assistant for SEBI/NSE/MCX compliance documents",
 };
 
-// Matches the dark theme's page background (--color-surface-0 in globals.css),
-// tinting mobile browser chrome (Safari/Chrome address bar) to match rather
-// than showing a default white bar around a dark page.
+// Matches the page canvas (--color-canvas in globals.css) so mobile browser
+// chrome blends into the app rather than butting against it.
 export const viewport: Viewport = {
-  themeColor: "#09090b",
+  themeColor: "#f5f5f7",
 };
 
 export default function RootLayout({
