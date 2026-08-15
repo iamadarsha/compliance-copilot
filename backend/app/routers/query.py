@@ -51,11 +51,18 @@ async def _log_query(
     latency_ms: int,
     refusal_reason: str | None,
     top_similarity: float,
+    provider: str | None = None,
 ) -> None:
-    """Persist the answered question to `queries` for evaluation and debugging."""
+    """Persist the answered question to `queries` for evaluation and debugging.
+
+    `provider` records which generation provider actually served the request —
+    with failover in play, "which model answered this?" is no longer inferable
+    from configuration alone and has to be captured per query.
+    """
     payload = answer.model_dump()
     payload["refusal_reason"] = refusal_reason
     payload["top_similarity"] = round(top_similarity, 4)
+    payload["provider"] = provider
     await _insert_query(question, payload, model, latency_ms)
 
 
@@ -120,9 +127,14 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
         return answer
 
     # --- Layer 2: model-level grounding and refusal ---
-    model_name: str | None = generator.MODEL
+    # generate() tries Gemini, then falls back to Groq on a provider fault only;
+    # it returns the provider that actually served the request so it can be
+    # logged. A model's own refusal never triggers failover — see generator.generate.
+    model_name: str | None = None
+    provider: str | None = None
     try:
-        answer = await generator.generate_answer(request.question, chunks)
+        answer, provider = await generator.generate(request.question, chunks)
+        model_name = provider
     except generator.GenerationError as exc:
         # An outage, not an answer. Returning 200 here would make a provider
         # failure indistinguishable from a refusal to every consumer — which is
@@ -148,6 +160,12 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
     refusal_reason = REFUSAL_MODEL if answer.refused else None
     latency_ms = int((time.perf_counter() - started) * 1000)
     await _log_query(
-        request.question, answer, model_name, latency_ms, refusal_reason, top_similarity
+        request.question,
+        answer,
+        model_name,
+        latency_ms,
+        refusal_reason,
+        top_similarity,
+        provider,
     )
     return answer

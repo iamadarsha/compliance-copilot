@@ -1,18 +1,103 @@
-"""Generates a cited answer from retrieved chunks via a Groq-hosted LLM."""
+"""Generates a cited answer from retrieved chunks, with provider failover.
 
+Gemini is the primary generator and Groq the fallback. Failover is triggered
+ONLY by a GenerationError — a provider-level fault. A model that successfully
+returns refused=True has done its job correctly and that answer is returned
+as-is; retrying another provider in the hope of a non-refusal would be
+shopping for the answer we wanted, which in a compliance tool is precisely
+the failure mode the refusal logic exists to prevent.
+"""
+
+import asyncio
+import logging
 import os
+import time
+from typing import NamedTuple
 
 import groq
 import instructor
 
 from app.schemas import ComplianceAnswer
 
-MODEL = "llama-3.3-70b-versatile"
+logger = logging.getLogger(__name__)
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# Gemini cascade, tried in order before falling back to Groq. Every ID here was
+# checked against ai.google.dev's models/deprecations/pricing pages rather than
+# recalled — note there is NO "gemini-3.1-flash"; that generation ships only a
+# -lite flash variant, so it is absent by fact, not oversight.
+#
+# Ordering is cheapest-and-current first, then the same generation's fuller
+# model, then older generations. The premium 3.7/3.6 flash models are
+# deliberately excluded: the brief asks for small, cheap models, and a failover
+# path is the worst place to silently start spending more per query.
+GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",  # current fast/cheap tier, no announced shutdown
+    "gemini-3.5-flash",  # same generation, more headroom
+    "gemini-3.1-flash-lite",  # older gen; retires 2027-05-07
+    "gemini-2.5-flash-lite",  # cheapest overall ($0.10/$0.40 per 1M)
+    "gemini-2.5-flash",  # 2.5 line is NOT deprecated; 2.0 was
+]
+GEMINI_MODEL = GEMINI_MODELS[0]
+
+# Hard ceiling on the entire Gemini stage, independent of how many models are
+# left to try. This is what keeps the cascade a failsafe rather than a new
+# source of latency: once the budget is spent the remaining models are skipped
+# and Groq — which is fast and already proven on this workload — takes over.
+# In practice the cascade gets through 1-2 models before handing off.
+GEMINI_TOTAL_BUDGET_SECONDS = float(os.environ.get("GEMINI_TOTAL_BUDGET_SECONDS", "25"))
+
+# Substrings marking a failure that will recur identically on every Gemini
+# model — a bad/absent credential, or the API not being enabled for the
+# project. Cascading through five models on one of these just multiplies the
+# same rejection, so the cascade short-circuits straight to Groq. Matching on
+# message text is admittedly brittle; it fails safe, since an unrecognised
+# error simply falls through to the normal per-model cascade.
+_GEMINI_FATAL_MARKERS = (
+    "api key not valid",
+    "api_key_invalid",
+    "unauthenticated",
+    "permission_denied",
+    "permission denied",
+    "consumer_suspended",
+    "has not been used in project",
+    "401",
+    "403",
+    # Client-side misconfiguration (e.g. a missing optional dependency) is
+    # every bit as model-independent as a bad credential. Learned the hard
+    # way: a missing `jsonref` made all five models fail in turn, four of
+    # those attempts pure waste.
+    "configurationerror",
+)
+
+# Provider labels recorded against each query so it's visible after the fact
+# which provider actually served it.
+GROQ_PROVIDER = f"groq/{GROQ_MODEL}"
+GEMINI_PROVIDER = f"gemini/{GEMINI_MODEL}"
+
+# Kept for backwards compatibility with anything still importing MODEL.
+MODEL = GROQ_MODEL
+
 MAX_RETRIES = 2
 
 # Bounds a hung provider call so it surfaces as a GenerationError rather than
 # holding the request open. Env-overridable so a failure can be forced in tests.
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("GROQ_TIMEOUT_SECONDS", "60"))
+
+# Deliberately tight. A flash-lite answer on this corpus lands in a couple of
+# seconds, so 15s already means something is wrong — waiting the full 60s a
+# generous timeout would allow just delays the fallback that is going to be
+# needed anyway. Failing fast is the point of having a fallback at all.
+GEMINI_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "15"))
+
+# instructor's from_provider() selects the recommended mode per provider, and
+# its own docs advise letting it. Groq needed an explicit override (see
+# _build_groq_client) but that finding is Groq-specific — it was about Groq
+# validating tool-call arguments server-side — and does not transfer to
+# Gemini, which has native structured-output support. Left on auto-select,
+# overridable via env purely so the choice can be A/B tested without a rebuild.
+_GEMINI_MODE_OVERRIDE = os.environ.get("GEMINI_MODE", "").strip().upper()
 
 
 class GenerationError(RuntimeError):
@@ -24,6 +109,20 @@ class GenerationError(RuntimeError):
     absence of any answer at all. Callers must not present the two alike: a
     refusal is a result, a GenerationError is an outage.
     """
+
+
+class GenerationResult(NamedTuple):
+    """An answer plus the provider that actually produced it.
+
+    generate() returns this rather than a bare ComplianceAnswer so the caller
+    can log which provider served the request. The alternative — stashing the
+    provider in module state — would race under concurrent requests and report
+    the wrong provider for a query, which is worse than useless in a log meant
+    for reliability debugging.
+    """
+
+    answer: ComplianceAnswer
+    provider: str
 
 SYSTEM_PROMPT = """\
 You are a compliance assistant answering questions about Indian securities-market \
@@ -147,7 +246,22 @@ def _format_context(chunks: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def _build_client() -> instructor.AsyncInstructor:
+def _build_user_message(question: str, chunks: list[dict]) -> str:
+    """The single user-message shape both providers receive.
+
+    Shared deliberately: the whole point of the failover is that the fallback
+    answers the same question from the same evidence under the same rules. Any
+    divergence here would make the two providers quietly non-equivalent.
+    """
+    return (
+        f"CONTEXT ({len(chunks)} retrieved chunks):\n\n"
+        f"{_format_context(chunks)}\n\n"
+        f"--- END CONTEXT ---\n\n"
+        f"QUESTION: {question}"
+    )
+
+
+def _build_groq_client() -> instructor.AsyncInstructor:
     """Build an async instructor-wrapped Groq client.
 
     Async so the network-bound generation call doesn't block the event loop.
@@ -169,41 +283,28 @@ def _build_client() -> instructor.AsyncInstructor:
     )
 
 
-async def generate_answer(question: str, chunks: list[dict]) -> ComplianceAnswer:
-    """Produce a grounded, cited answer from the given context chunks.
-
-    Args:
-        question: The user's natural-language question.
-        chunks: Retrieved chunks (with document metadata) to ground the answer.
-
-    Returns:
-        A ComplianceAnswer whose schema is enforced by instructor, not merely
-        requested — validation failures are retried against the model.
-
-    Raises:
-        GenerationError: the provider errored, timed out, or instructor could
-            not obtain a schema-valid response within MAX_RETRIES. A refusal is
-            never raised — that returns normally with refused=True.
-    """
-    client = _build_client()
-    user_message = (
-        f"CONTEXT ({len(chunks)} retrieved chunks):\n\n"
-        f"{_format_context(chunks)}\n\n"
-        f"--- END CONTEXT ---\n\n"
-        f"QUESTION: {question}"
-    )
-
-    try:
-        return await _create(client, user_message)
-    except GenerationError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - normalized into one failure type
-        raise GenerationError(f"{type(exc).__name__}: {exc}") from exc
+def _build_gemini_client(model: str) -> instructor.AsyncInstructor:
+    """Build an async instructor-wrapped Gemini client for one model."""
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise GenerationError("GEMINI_API_KEY is not set; cannot call the primary model.")
+    kwargs: dict = {"async_client": True, "api_key": api_key}
+    if _GEMINI_MODE_OVERRIDE:
+        kwargs["mode"] = getattr(instructor.Mode, _GEMINI_MODE_OVERRIDE)
+    return instructor.from_provider(f"google/{model}", **kwargs)
 
 
-async def _create(client: instructor.AsyncInstructor, user_message: str) -> ComplianceAnswer:
+def _is_fatal_for_all_gemini(exc: Exception) -> bool:
+    """Whether this failure would recur identically on every other Gemini model."""
+    message = str(exc).lower()
+    return any(marker in message for marker in _GEMINI_FATAL_MARKERS)
+
+
+async def _create(
+    client: instructor.AsyncInstructor, model: str, user_message: str
+) -> ComplianceAnswer:
     return await client.chat.completions.create(
-        model=MODEL,
+        model=model,
         response_model=ComplianceAnswer,
         max_retries=MAX_RETRIES,
         temperature=0,
@@ -212,3 +313,134 @@ async def _create(client: instructor.AsyncInstructor, user_message: str) -> Comp
             {"role": "user", "content": user_message},
         ],
     )
+
+
+async def generate_groq(question: str, chunks: list[dict]) -> ComplianceAnswer:
+    """Answer via Groq. Raises GenerationError on any provider-level failure."""
+    client = _build_groq_client()
+    try:
+        return await _create(client, GROQ_MODEL, _build_user_message(question, chunks))
+    except GenerationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - normalized into one failure type
+        raise GenerationError(f"{type(exc).__name__}: {exc}") from exc
+
+
+async def generate_gemini(
+    question: str, chunks: list[dict], model: str = GEMINI_MODEL
+) -> ComplianceAnswer:
+    """Answer via one Gemini model. Raises GenerationError on provider failure.
+
+    The call is wrapped in a hard asyncio timeout rather than relying on the
+    SDK's own: it bounds the request provider-agnostically, and gives a clean
+    lever (GEMINI_TIMEOUT_SECONDS) for exercising the failover path in tests
+    without needing to invalidate a real credential.
+    """
+    client = _build_gemini_client(model)
+    try:
+        return await asyncio.wait_for(
+            _create(client, model, _build_user_message(question, chunks)),
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+    except GenerationError:
+        raise
+    except TimeoutError as exc:
+        raise GenerationError(f"timed out after {GEMINI_TIMEOUT_SECONDS}s") from exc
+    except Exception as exc:  # noqa: BLE001 - normalized into one failure type
+        raise GenerationError(f"{type(exc).__name__}: {exc}") from exc
+
+
+async def generate_gemini_cascade(question: str, chunks: list[dict]) -> GenerationResult:
+    """Try each Gemini model in turn, newest/cheapest first.
+
+    Cascading across models is worth doing because the realistic Gemini failure
+    is per-model, not account-wide: quota is metered per model, and an
+    individual model can be overloaded or retired while its siblings are fine.
+    It is NOT worth doing for a bad credential, which every model rejects
+    identically — hence the fatal-error short-circuit.
+
+    Bounded twice over (per-model timeout and a total stage budget) so that a
+    slow cascade can never cost more than going straight to the fallback would
+    have saved.
+
+    Raises:
+        GenerationError: every Gemini model failed, the budget ran out, or the
+            first failure was one that all models would share.
+    """
+    stage_started = time.monotonic()
+    last_error: Exception | None = None
+
+    for index, model in enumerate(GEMINI_MODELS):
+        elapsed = time.monotonic() - stage_started
+        if index > 0 and elapsed >= GEMINI_TOTAL_BUDGET_SECONDS:
+            logger.warning(
+                "Gemini stage budget of %.0fs exhausted after %.1fs; skipping "
+                "remaining %d model(s) and handing off",
+                GEMINI_TOTAL_BUDGET_SECONDS,
+                elapsed,
+                len(GEMINI_MODELS) - index,
+            )
+            break
+
+        try:
+            answer = await generate_gemini(question, chunks, model)
+        except GenerationError as exc:
+            last_error = exc
+            if _is_fatal_for_all_gemini(exc):
+                logger.warning(
+                    "gemini/%s failed with an account-level fault (%s); skipping the "
+                    "remaining Gemini models since they would fail identically",
+                    model,
+                    exc,
+                )
+                break
+            logger.warning("gemini/%s failed (%s); trying next Gemini model", model, exc)
+            continue
+
+        if index > 0:
+            logger.info("gemini/%s served the request after %d earlier failure(s)", model, index)
+        return GenerationResult(answer, f"gemini/{model}")
+
+    raise GenerationError(f"all Gemini models failed; last error: {last_error}")
+
+
+async def generate(question: str, chunks: list[dict]) -> GenerationResult:
+    """Produce a grounded, cited answer, falling back across providers.
+
+    Gemini first; on GenerationError, log the cause and try Groq. If Groq also
+    raises, the error propagates so the router's existing 503 path handles it.
+
+    A successful answer is returned unconditionally — including one with
+    refused=True. A refusal is a valid, correct result, not a failure signal:
+    failing over on refusal would mean re-rolling the question against a second
+    model until one agreed to answer, which is exactly the behaviour the
+    grounding rules are designed to prevent.
+
+    Raises:
+        GenerationError: both providers failed at the provider level.
+    """
+    try:
+        return await generate_gemini_cascade(question, chunks)
+    except GenerationError as gemini_exc:
+        logger.warning(
+            "Every Gemini model failed (%s); falling back to %s",
+            gemini_exc,
+            GROQ_PROVIDER,
+        )
+        try:
+            answer = await generate_groq(question, chunks)
+        except GenerationError as groq_exc:
+            logger.error(
+                "Fallback provider %s also failed (%s); no answer available",
+                GROQ_PROVIDER,
+                groq_exc,
+            )
+            raise
+        logger.info("Fallback provider %s served the request", GROQ_PROVIDER)
+        return GenerationResult(answer, GROQ_PROVIDER)
+
+
+async def generate_answer(question: str, chunks: list[dict]) -> ComplianceAnswer:
+    """Backwards-compatible wrapper returning just the answer."""
+    result = await generate(question, chunks)
+    return result.answer
