@@ -16,6 +16,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# torch/BLAS spin up one thread pool per available CPU core by default, and
+# each thread carries its own working-memory buffers — real overhead on a
+# memory-constrained instance for a single-request-at-a-time embedding
+# workload that gets nothing from parallelism here. Also disables
+# tokenizers' own multiprocessing, which forks and duplicates memory.
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV TOKENIZERS_PARALLELISM=false
+
 EXPOSE 8000
 
 # Shell form (not exec-form array) so $PORT expands. Render (and most PaaS
