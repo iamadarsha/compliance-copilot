@@ -11,7 +11,7 @@ The backend is on Render's free tier, which spins down after ~15 minutes idle �
 first request after that can take 50s+ or briefly return a 503 while it wakes up.
 That's the host, not the app; see "Production changes" below for the real fix.
 
-**Documents:** the corpus is 5 real SEBI/NSE/MCX circulars on retail algorithmic
+**Documents:** the corpus is 9 real SEBI/NSE/MCX circulars on retail algorithmic
 trading, a domain I already work with — not a pack provided by SARC. The brief allows
 using your own small document set in place of the provided pack, on the condition
 that you say so; this is that disclosure.
@@ -22,8 +22,8 @@ Copy `backend/.env.example` to `backend/.env` and `frontend/.env.local.example` 
 `frontend/.env.local`, filling in `GROQ_API_KEY` and `GEMINI_API_KEY` (both required —
 generation is Gemini-primary with Groq as fallback, so the fallback needs its own key
 too), then run `docker compose up` from the project root. This starts Postgres (pgvector) on `5432`, the FastAPI backend on `8000`,
-and the Next.js frontend on `3000`. Once up, `POST /ingest` loads the five markdown
-circulars in `backend/docs/` into the database (5 documents → 33 chunks). The eval
+and the Next.js frontend on `3000`. Once up, `POST /ingest` loads the nine markdown
+circulars in `backend/docs/` into the database (9 documents → 58 chunks). The eval
 harness runs with `docker compose exec backend python -m eval.run_eval`.
 
 Re-verified from a genuinely fresh `git clone` (not a copy) immediately before writing
@@ -39,12 +39,19 @@ criteria roughly in the order the brief lists them.
 - **Works end to end from a clean checkout.** Verified with an actual `git clone` into
   a scratch directory, not assumed from the working copy. Also deployed and live
   (links above), which is not required but removes any doubt.
-- **Eval, from that same fresh clone**: 6/6 retrieval hit rate, 6/6 citation accuracy,
-  9/10 refusal accuracy on a 10-question set (4 deliberately unanswerable). Layer-1
-  threshold refusals run ~95x faster than a generated answer, at zero token cost —
-  down from an earlier ~565x measured before Phase 6 made Gemini, not Groq, the
-  primary generator; Gemini answers in ~2s where Groq averaged ~11s. Full output in
-  `backend/eval/`.
+- **Eval, from that same fresh clone**: 6/6 retrieval hit rate, 5/6 citation accuracy,
+  8/10 refusal accuracy on a 10-question set (4 deliberately unanswerable), against the
+  current 9-document corpus. Layer-1 threshold refusals run ~95x faster than a
+  generated answer, at zero token cost — down from an earlier ~565x measured before
+  Phase 6 made Gemini, not Groq, the primary generator; Gemini answers in ~2s where
+  Groq averaged ~11s. Full output in `backend/eval/`.
+- **Growing the corpus from 5 to 9 documents cost something real, measured rather
+  than glossed over**: one previously-clean question now retrieves a competing
+  procedural chunk ahead of the actual definition it needs, and the citation-consistency
+  check correctly downgrades that to a cautious refusal instead of a confidently
+  under-cited answer — see "Corpus growth" in the write-up below for the full
+  diagnosis. The safety net did its job; the underlying retrieval got measurably
+  noisier, and that's reported here rather than left for someone else to find.
 - **Refuses rather than fabricates**, and the eval measures this rather than asserting
   it — see the refusal-accuracy breakdown, which reports honestly even when a
   question is answered-but-hedged rather than formally refused.
@@ -102,6 +109,32 @@ children of it — they're the document's own clauses 6–10 continuing past tha
 A section's letter only compounds onto its clauses when numbering restarts at 1 within
 it (as in the NSE annexure's sections A–J). Getting this wrong would have produced
 confidently mis-attributed citations, which is worse than none.
+
+**Corpus growth.** The corpus grew from 5 to 9 documents after initial submission — four
+more real, verified SEBI/NSE circulars specifically on algorithmic trading (fetched and
+text-extracted directly from sebi.gov.in and nsearchives.nseindia.com, not written from
+memory), two of which close a real gap: SEBI's original 2012 circular
+(`CIR/MRD/DP/09/2012`) was already referenced by name in doc 01 as historical
+background but wasn't itself in the corpus, and NSE's `INVG/69255` "Detailed
+Operational Modalities" was referenced by three other documents without being
+present either. Both are now answerable directly instead of triggering a
+"referenced but not in this document set" disclosure.
+
+That expansion had a real, measured cost, not just a benefit. Eval citation accuracy
+dropped from 6/6 to 5/6: the question "what's the difference between a white box and
+black box algo" used to retrieve doc 01's clean definitional chunk as its top hit. With
+four more documents in the corpus, a procedural chunk from the new `NSE/INVG/69255`
+— which mentions "Whitebox or Blackbox" in the context of the *registration workflow*,
+not the definition — now outranks it. The model still answers correctly in prose, but
+stops attaching a confident `primary` citation, and the Phase 6.5 consistency check
+(see "overconfident specific-value answers" below) correctly catches that and downgrades
+it to a cautious refusal rather than presenting an under-cited answer as confident.
+Confirmed reproducible, not a one-off: 5/5 reruns showed the same result. The safety
+net is working exactly as designed; the underlying retrieval simply got noisier as
+more topically-overlapping content was added — a direct, measured illustration of why
+"add more documents" is not a free way to make a RAG system look more capable. The
+similarity threshold itself needed no retuning: 0.69 still separates every genuinely
+off-topic distractor from every genuinely answerable question in the eval set.
 
 **Models.** Generation is Gemini-primary with a Groq fallback (`llama-3.3-70b-versatile`)
 — see "Provider failover" below for the full design; Groq was the original
