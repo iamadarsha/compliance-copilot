@@ -87,16 +87,20 @@ grading benefit — citations already carry issuer, doc_id and section, which is
 brief's own steer to pick one rather than spread thin: function calling, a
 review/approve-reject flow, and prompt/token-cost logging were all left out.
 Deployment was the one done — Neon (Postgres+pgvector), Render (backend), Vercel
-(frontend), links at the top of this file. It surfaced three real production bugs
+(frontend), links at the top of this file. It surfaced four real production bugs
 worth naming briefly since they're the kind of thing that only shows up outside a
 dev machine: the backend Dockerfile hardcoded port 8000 and ignored the `$PORT`
 Render injects, which would have made the service unreachable despite running; a
 plain `pip install` pulled PyTorch's full CUDA/GPU build on a CPU-only workload,
-producing an 8.68GB image against a free-tier disk budget nowhere near that; and
+producing an 8.68GB image against a free-tier disk budget nowhere near that;
 `/ingest`'s batch embedding call exceeded the free tier's memory limit and got
 OOM-killed mid-request — confirmed via Render's own crash notification, not
-guessed at. All three fixed and re-verified against the live deploy, not just
-locally.
+guessed at; and, later, a routine corpus-expansion deploy OOM-killed at pure
+startup, before the port even bound — root-caused to `import torch` alone costing
+~394MB resident, which no amount of dependency pinning fixed, since it wasn't a
+version-drift problem, it was PyTorch's own baseline footprint. See "Embeddings"
+below for the actual fix. All four fixed and re-verified against the live deploy,
+not just locally.
 
 ### Tradeoffs
 
@@ -138,10 +142,39 @@ off-topic distractor from every genuinely answerable question in the eval set.
 
 **Models.** Generation is Gemini-primary with a Groq fallback (`llama-3.3-70b-versatile`)
 — see "Provider failover" below for the full design; Groq was the original
-single-provider choice. Embeddings are local `sentence-transformers`
-(`bge-small-en-v1.5`, 384 dims) because **Groq has no embeddings endpoint** — that
-constraint, not preference, drove the split, and it still holds regardless of which
-provider generates the answer.
+single-provider choice. Embeddings are local (`bge-small-en-v1.5`, 384 dims) because
+**Groq has no embeddings endpoint** — that constraint, not preference, drove local
+embedding in the first place, and it still holds regardless of which provider
+generates the answer.
+
+**Embeddings.** Originally ran through `sentence-transformers`, which depends on
+PyTorch. A routine corpus-expansion deploy OOM-killed at pure container startup on
+Render's free tier — before a single request, before the port even bound. Pinning
+dependency versions (a real, separate fix, kept) didn't resolve it, which was the
+first sign this wasn't version drift. Measured precisely rather than guessed at:
+`import torch` alone costs **~394MB** resident, before any model is loaded; total
+peak with the smallest available embedding model reaches **528–544MB**, already over
+the 512MB ceiling before the FastAPI app itself adds anything. Swapping the wrapper
+library saved only ~16MB — the cost is PyTorch's own baseline, not the library on top
+of it.
+
+The actual fix: **ONNX Runtime** instead of PyTorch, running the same
+`bge-small-en-v1.5` weights via a widely-used community ONNX export
+(`Xenova/bge-small-en-v1.5`) rather than the original checkpoint directly, with
+manual CLS-token pooling and L2 normalization replicating `sentence-transformers`'
+own reported pipeline for this model (`pooling_mode: cls`, verified from its actual
+module config rather than assumed from BGE's general documentation). Peak memory:
+**~234MB** — confirmed booting cleanly under a hard 512MB Docker memory limit
+locally, the same constraint that reliably killed the PyTorch path. Before trusting
+it, verified numerically equivalent to the original across seven realistic corpus
+and query strings: cosine similarity 1.0, max absolute difference ~1e-7 (pure
+floating-point noise) — nowhere close to disturbing a similarity threshold whose
+narrowest observed band was 0.004. The full eval suite was re-run after the swap and
+produced numbers identical to four decimal places to the pre-swap run, confirming
+zero behavioral drift, not just assuming it from the cosine-similarity check alone.
+The ONNX weights are fetched once — baked into the image at Docker build time in
+production, self-downloaded on first run in local dev, where a bind mount hides the
+image's baked-in copy — rather than re-fetched from the HF Hub on every boot.
 
 **Structured output.** instructor + Pydantic enforce the `ComplianceAnswer` schema.
 Worth naming the actual bug found here, because it is Groq-specific and genuinely

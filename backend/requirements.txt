@@ -1,16 +1,28 @@
-fastapi
-uvicorn[standard]
-asyncpg
-pgvector
-sentence-transformers
-groq
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+asyncpg==0.31.0
+pgvector==0.5.0
+# ONNX Runtime + tokenizers, not sentence-transformers/torch — see
+# app/rag/embedder.py for the measured reason: `import torch` alone cost
+# ~394MB resident before any model was touched, reliably OOM-killing this
+# app at pure startup on Render's 512MB free tier. This path peaks at ~234MB
+# for the same model, verified numerically equivalent to the torch-based
+# output before switching (cosine similarity 1.0, diff ~1e-7).
+onnxruntime==1.28.0
+tokenizers==0.22.2
+numpy==2.4.6
+groq==1.6.0
 # The [google-genai] extra, not a bare google-genai pin: Gemini structured
 # output also needs `jsonref`, which only the extra pulls in. Installing the
 # SDK alone left instructor raising ConfigurationError on every Gemini model
 # at runtime — the app still answered, silently, entirely via the Groq
 # fallback, which is exactly the kind of failure the provider log exists to
 # make visible.
-instructor[google-genai]
-python-dotenv
-pydantic
-pyyaml
+instructor[google-genai]==1.15.4
+python-dotenv==1.2.2
+pydantic==2.13.4
+pyyaml==6.0.3
+
+# Pinned deliberately, not just for reproducibility in the abstract: an
+# unpinned build on this exact code (no dependency changes at all) OOM-killed
+# on Render's free tier at startup, before the port even bound.

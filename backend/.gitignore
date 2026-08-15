@@ -3,3 +3,8 @@ __pycache__/
 .venv
 venv
 .env
+
+# Downloaded ONNX embedding model weights — fetched at Docker build time in
+# production, self-downloaded on first run in local dev (see
+# app/rag/embedder.py). Not source, shouldn't be committed.
+app/rag/onnx_model/

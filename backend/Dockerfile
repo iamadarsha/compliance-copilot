@@ -3,27 +3,32 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY requirements.txt .
-# torch's default PyPI wheel bundles the full CUDA/GPU stack on Linux (~2.9GB
-# of nvidia-* packages: cublas, cudnn, cufft, nccl, ...) even though
-# sentence-transformers only ever runs CPU inference here — this app never
-# touches a GPU. Installing the CPU-only build first means pip already has a
-# torch satisfying sentence-transformers' requirement and won't pull the GPU
-# build afterward. Confirmed: cuts the image from 8.68GB to a fraction of
-# that, which is very likely why a PaaS free-tier build was failing on
-# disk/size limits.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
+
+# ONNX-exported bge-small-en-v1.5 weights, fetched once at build time and
+# baked into the image — not downloaded at container startup. Two reasons:
+# it removes a network dependency (and the HF Hub rate-limit warning seen at
+# every prior boot) from the startup path entirely, and it keeps peak
+# *runtime* memory to just the ONNX Runtime session (~234MB measured) rather
+# than adding a download buffer on top during the exact window Render's free
+# tier is tightest. See app/rag/embedder.py for why torch/sentence-
+# transformers were dropped for this in the first place.
+RUN mkdir -p app/rag/onnx_model && \
+    python3 -c "\
+import urllib.request; \
+base = 'https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main/'; \
+files = ['onnx/model.onnx', 'tokenizer.json']; \
+dest = ['app/rag/onnx_model/model.onnx', 'app/rag/onnx_model/tokenizer.json']; \
+[urllib.request.urlretrieve(base + f, d) for f, d in zip(files, dest)]"
 
 COPY . .
 
-# torch/BLAS spin up one thread pool per available CPU core by default, and
-# each thread carries its own working-memory buffers — real overhead on a
-# memory-constrained instance for a single-request-at-a-time embedding
-# workload that gets nothing from parallelism here. Also disables
-# tokenizers' own multiprocessing, which forks and duplicates memory.
+# ONNX Runtime spins up one intra-op thread pool per available CPU core by
+# default, and each thread carries its own working-memory buffers — real
+# overhead on a memory-constrained instance for a single-request-at-a-time
+# embedding workload that gets nothing from parallelism here.
 ENV OMP_NUM_THREADS=1
-ENV MKL_NUM_THREADS=1
-ENV TOKENIZERS_PARALLELISM=false
+ENV OMP_WAIT_POLICY=PASSIVE
 
 EXPOSE 8000
 
