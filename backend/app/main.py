@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import ingest, query
+from app.routers import documents, ingest, query
 
 app = FastAPI(title="Compliance Copilot API")
 
@@ -28,6 +28,7 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+app.include_router(documents.router)
 app.include_router(ingest.router)
 app.include_router(query.router)
 

@@ -72,7 +72,11 @@ The full pipeline is implemented end to end: **ingestion** (YAML frontmatter par
 straight into the `documents` table), **section-aware chunking**, **pgvector cosine
 retrieval**, a **two-layer refusal gate**, **structured generation** (Gemini primary,
 Groq fallback) via instructor + Pydantic, an **eval harness**, and a **Next.js frontend** rendering
-answers with citation chips and a confidence badge.
+answers with citation chips and a confidence badge, alongside a panel listing the indexed
+corpus (issuer, date, one-line summary, link to the source document) served from
+`GET /documents` — driven by the database rather than a hardcoded list, after a
+hardcoded header count silently kept claiming "5 circulars indexed" once the corpus
+had grown to 9.
 
 ### What was left out
 
