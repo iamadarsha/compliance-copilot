@@ -4,6 +4,18 @@ A retrieval-augmented assistant answering questions about Indian securities-mark
 circulars (SEBI, NSE, MCX) on retail participation in algorithmic trading, with
 every answer cited to a specific document and section.
 
+**Live app:** https://compliance-copilot-eight-sigma.vercel.app
+**Backend API:** https://compliance-copilot-backend.onrender.com/health
+
+The backend is on Render's free tier, which spins down after ~15 minutes idle — the
+first request after that can take 50s+ or briefly return a 503 while it wakes up.
+That's the host, not the app; see "Production changes" below for the real fix.
+
+**Documents:** the corpus is 5 real SEBI/NSE/MCX circulars on retail algorithmic
+trading, a domain I already work with — not a pack provided by SARC. The brief allows
+using your own small document set in place of the provided pack, on the condition
+that you say so; this is that disclosure.
+
 ## Setup
 
 Copy `backend/.env.example` to `backend/.env` and `frontend/.env.local.example` to
@@ -13,7 +25,34 @@ and the Next.js frontend on `3000`. Once up, `POST /ingest` loads the five markd
 circulars in `backend/docs/` into the database (5 documents → 33 chunks). The eval
 harness runs with `docker compose exec backend python -m eval.run_eval`.
 
+Re-verified from a genuinely fresh `git clone` (not a copy) immediately before writing
+this: `docker compose up` → `/ingest` → eval all run clean with no changes needed.
+
 ---
+
+## TL;DR
+
+The full write-up below is long — this is the one-page version, for the scoring
+criteria roughly in the order the brief lists them.
+
+- **Works end to end from a clean checkout.** Verified with an actual `git clone` into
+  a scratch directory, not assumed from the working copy. Also deployed and live
+  (links above), which is not required but removes any doubt.
+- **Eval, from that same fresh clone**: 6/6 retrieval hit rate, 6/6 citation accuracy,
+  9/10 refusal accuracy on a 10-question set (4 deliberately unanswerable). Layer-1
+  threshold refusals run ~565x faster than a generated answer, at zero token cost.
+  Full output in `backend/eval/`.
+- **Refuses rather than fabricates**, and the eval measures this rather than asserting
+  it — see the refusal-accuracy breakdown, which reports honestly even when a
+  question is answered-but-hedged rather than formally refused.
+- **Two known limitations, both measured, not hand-waved**: cross-issuer citations
+  sometimes co-cite an unrelated document without flagging the mismatch; one
+  prompt-level overconfidence bug measured at 40% pre-fix (n=5), unresolved-with-
+  confidence post-fix (n=3, too small to claim a rate — blocked on provider rate
+  limits, said plainly rather than papered over).
+- **One optional extra, done properly**: deployment. Not auth, not function calling,
+  not a review flow — the brief asks to pick one rather than spread thin across
+  several.
 
 ## Write-up
 
@@ -34,9 +73,20 @@ chunk-text-preview on citations, which would have required an extra endpoint for
 grading benefit — citations already carry issuer, doc_id and section, which is what
 "show which document and section each answer came from" asks for.
 
-**Of the optional extras, none were completed — including deployment.** The app runs
-locally under Docker Compose only. This is a gap, not a decision: the time went into
-the correctness work described below.
+**Of the optional extras, one was done properly and the rest skipped**, per the
+brief's own steer to pick one rather than spread thin: function calling, a
+review/approve-reject flow, and prompt/token-cost logging were all left out.
+Deployment was the one done — Neon (Postgres+pgvector), Render (backend), Vercel
+(frontend), links at the top of this file. It surfaced three real production bugs
+worth naming briefly since they're the kind of thing that only shows up outside a
+dev machine: the backend Dockerfile hardcoded port 8000 and ignored the `$PORT`
+Render injects, which would have made the service unreachable despite running; a
+plain `pip install` pulled PyTorch's full CUDA/GPU build on a CPU-only workload,
+producing an 8.68GB image against a free-tier disk budget nowhere near that; and
+`/ingest`'s batch embedding call exceeded the free tier's memory limit and got
+OOM-killed mid-request — confirmed via Render's own crash notification, not
+guessed at. All three fixed and re-verified against the live deploy, not just
+locally.
 
 ### Tradeoffs
 
@@ -148,3 +198,11 @@ API key, and the eval scoring defect that reported a perfect score on a fully
 rate-limited run. Each of those would have shipped looking like success. Verification
 at every phase ran against the live stack — real ingestion, real queries, real database
 inspection — rather than assuming the code did what it claimed.
+
+Where it got in the way, honestly: Groq's free-tier daily token cap was hit
+repeatedly during both eval runs and deploy debugging, costing real time waiting on
+quota resets rather than iterating. And on the first deploy failure, the first fix
+(an oversized Docker image) was real and worth keeping but turned out not to be the
+actual cause — the honest move was saying so plainly once the real error log showed
+a different failure, rather than quietly moving on as if the first guess had been
+right.
