@@ -12,7 +12,13 @@ type HistoryEntry = {
   result: ComplianceAnswer;
 };
 
-// Every example is verified to clear the 0.69 retrieval threshold (scores
+// Orientation questions, answered deterministically from the indexed corpus
+// rather than by retrieval (see backend app/rag/meta.py). Listed first because
+// someone who has never seen this needs to know what it covers before a
+// question about order-per-second thresholds means anything to them.
+const STARTER_EXAMPLES = ["What can you do?", "What circulars do you have?"];
+
+// Every example here is verified to clear the 0.69 retrieval threshold (scores
 // 0.71 / 0.74 / 0.76) — an example that lands in a refusal would make a
 // working system look broken to anyone trying it for the first time.
 // "Who counts as 'family'?" alone scores 0.56 and is deliberately NOT used.
@@ -171,22 +177,43 @@ export default function Home() {
                 <AnswerCard result={selected.result} />
               </>
             ) : (
-              <div>
-                <p className="mb-3 text-center text-[11px] font-semibold uppercase tracking-[0.09em] text-ink-3">
-                  Try one
-                </p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {EXAMPLES.map((example) => (
-                    <button
-                      key={example}
-                      onClick={() => setPrefill({ value: example, key: Date.now() })}
-                      className="rounded-full border border-line-2 bg-surface px-4 py-2.5 text-[13px]
-                                 text-ink-2 shadow-sm transition-all hover:-translate-y-px
-                                 hover:border-ink-4 hover:text-ink"
-                    >
-                      {example}
-                    </button>
-                  ))}
+              <div className="flex flex-col gap-6">
+                <div>
+                  <p className="mb-3 text-center text-[11px] font-semibold uppercase tracking-[0.09em] text-ink-3">
+                    New here
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {STARTER_EXAMPLES.map((example) => (
+                      <button
+                        key={example}
+                        onClick={() => setPrefill({ value: example, key: Date.now() })}
+                        className="rounded-full border border-line-2 bg-surface px-4 py-2.5 text-[13px]
+                                   text-ink-2 shadow-sm transition-all hover:-translate-y-px
+                                   hover:border-ink-4 hover:text-ink"
+                      >
+                        {example}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="mb-3 text-center text-[11px] font-semibold uppercase tracking-[0.09em] text-ink-3">
+                    Ask the circulars
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {EXAMPLES.map((example) => (
+                      <button
+                        key={example}
+                        onClick={() => setPrefill({ value: example, key: Date.now() })}
+                        className="rounded-full border border-line-2 bg-surface px-4 py-2.5 text-[13px]
+                                   text-ink-2 shadow-sm transition-all hover:-translate-y-px
+                                   hover:border-ink-4 hover:text-ink"
+                      >
+                        {example}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}

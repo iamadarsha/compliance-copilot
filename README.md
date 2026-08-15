@@ -189,6 +189,30 @@ Groq validates tool-call arguments *server-side*, rejecting the whole request wi
 away in transport. Switching to `Mode.JSON` moves validation client-side, where
 Pydantic coerces `"false" → False` and retries actually engage.
 
+**Questions about the assistant itself.** "What can you do?" and "What circulars do
+you have?" are not questions about document *contents*, so retrieval scores them
+0.50 and 0.64 — below the 0.69 gate. The refusal was technically correct and a bad
+product: a newcomer's first question got a flat decline. These are now answered by a
+layer that runs *before* retrieval (`app/rag/meta.py`), and two choices there are
+deliberate. It never calls a model — answers are assembled from live `documents`
+rows, so the assistant cannot invent a circular it does not hold or misstate the
+count, which is the one hallucination this product least affords. And intent is
+matched by embedding similarity against canonical phrasings rather than keyword
+rules, because "what's in your database" and "where does your info come from" share
+no keywords but one intent; enumerating phrasings as literals is endless and
+brittle.
+
+The risk is hijacking a real question, so the threshold was set the same way as the
+retrieval one — from the gap between two measured populations. Meta phrasings score
+as low as 0.7500; the highest-scoring real question is "What is Milestone 2 …MCX
+circular?" at 0.6815 (it says "circular", so it reads closest to an inventory
+question without being one). 0.72 sits in that band. Measured: 20/20 unseen
+phrasings route correctly, 0/8 real document questions hijacked — including "What
+documents must a broker submit for empanelment?", which contains the word a keyword
+rule would have tripped on. These answers log a `meta/deterministic` provider rather
+than a model name, so the provider log keeps reporting how each answer was actually
+produced.
+
 **Refusal design — two layers.** Layer 1 is a similarity threshold, set to **0.69**,
 tuned from measured distractor scores rather than guessed. The initial 0.50 guess
 turned out to fire *never*: real adjacent-domain distractors ("capital gains tax rate",

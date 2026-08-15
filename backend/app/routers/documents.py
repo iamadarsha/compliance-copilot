@@ -8,6 +8,25 @@ from app.schemas import DocumentOut
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
+async def fetch_documents() -> list[dict]:
+    """Every indexed document as plain dicts, oldest first.
+
+    Shared with the meta-question layer (app/rag/meta.py), which answers
+    "what circulars do you have?" from these same rows — one query definition
+    so the panel and the chat answer can never disagree about the corpus.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, doc_id, title, issuer, doc_date, status_note, source_url, filename
+            FROM documents
+            ORDER BY doc_date ASC, id ASC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
 @router.get("", response_model=list[DocumentOut])
 async def list_documents():
     """Return every indexed document, oldest first.
@@ -23,13 +42,4 @@ async def list_documents():
     the 2012 foundational circular through to the 2025 implementation
     milestones — rather than by insertion order.
     """
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, doc_id, title, issuer, doc_date, status_note, source_url, filename
-            FROM documents
-            ORDER BY doc_date ASC, id ASC
-            """
-        )
-    return [DocumentOut(**dict(row)) for row in rows]
+    return [DocumentOut(**row) for row in await fetch_documents()]

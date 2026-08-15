@@ -7,8 +7,9 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from app.db.session import get_pool
-from app.rag import generator
+from app.rag import generator, meta
 from app.rag.retriever import retrieve_chunks
+from app.routers.documents import fetch_documents
 from app.schemas import ComplianceAnswer, QueryRequest
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -27,6 +28,11 @@ SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.69"))
 REFUSAL_BELOW_THRESHOLD = "below_threshold"
 REFUSAL_MODEL = "model_refused"
 REFUSAL_GENERATION_ERROR = "generation_error"
+
+# Recorded as the "provider" for meta answers. Deliberately not a model name:
+# nothing generated these, so labelling them with one would misreport how the
+# answer was produced in exactly the log built to keep that honest.
+META_PROVIDER = "meta/deterministic"
 
 
 async def _insert_query(question: str, payload: dict, model: str | None, latency_ms: int) -> None:
@@ -104,6 +110,25 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
         threshold but still don't support an answer make the model itself refuse.
     """
     started = time.perf_counter()
+
+    # --- Layer 0: questions about the assistant itself, not the circulars ---
+    # "What can you do?" and "What circulars do you have?" are not questions
+    # about document contents, so retrieval scores them near 0.50-0.64 and the
+    # gate below correctly refuses them — which meant a newcomer's very first
+    # question got a flat refusal. Answered here instead, deterministically
+    # from the documents table, so the assistant can never claim a circular it
+    # does not hold. Runs before retrieval and never calls a model, so it
+    # leaves the two-layer refusal gate untouched.
+    intent = meta.detect_intent(request.question)
+    if intent is not None:
+        documents = await fetch_documents()
+        answer = meta.build_answer(intent, documents)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        await _log_query(
+            request.question, answer, META_PROVIDER, latency_ms, None, 0.0, META_PROVIDER
+        )
+        return answer
+
     chunks, top_similarity = await retrieve_chunks(request.question)
 
     # --- Layer 1: deterministic threshold gate ---
