@@ -202,16 +202,27 @@ rules, because "what's in your database" and "where does your info come from" sh
 no keywords but one intent; enumerating phrasings as literals is endless and
 brittle.
 
-The risk is hijacking a real question, so the threshold was set the same way as the
-retrieval one — from the gap between two measured populations. Meta phrasings score
-as low as 0.7500; the highest-scoring real question is "What is Milestone 2 …MCX
-circular?" at 0.6815 (it says "circular", so it reads closest to an inventory
-question without being one). 0.72 sits in that band. Measured: 20/20 unseen
-phrasings route correctly, 0/8 real document questions hijacked — including "What
-documents must a broker submit for empanelment?", which contains the word a keyword
-rule would have tripped on. These answers log a `meta/deterministic` provider rather
-than a model name, so the provider log keeps reporting how each answer was actually
-produced.
+The risk is hijacking a real question, and the first version of this got it wrong in
+a way worth recording. It ran *before* retrieval, with a similarity threshold tuned
+against the gap between meta phrasings and the eval questions — 20/20 unseen
+phrasings routed correctly and 0/8 real questions were hijacked, so it looked
+verified. It shipped, and short keyword-style queries immediately broke: "MCX
+circular" (retrieval 0.77) and "22 Jul 2025 circular summary" (0.75) were questions
+the documents answered *well*, but both matched a corpus-inventory phrasing and got
+a list of documents instead of an answer. Short strings embed weakly and drift
+toward generic phrasings; a test set made entirely of well-formed questions could
+never surface that.
+
+The fix was ordering, not tuning: the check now runs **inside** the below-threshold
+branch, so it only ever sees questions retrieval was already going to refuse.
+Hijacking a real answer is now structurally impossible rather than tuned against —
+the meta path cannot reach a question the documents can answer. The lesson is the
+part worth keeping: a threshold tuned on one distribution of inputs is not evidence
+about a different one, and "verified" against only well-formed questions was not
+verification at all.
+
+These answers log a `meta/deterministic` provider rather than a model name, so the
+provider log keeps reporting how each answer was actually produced.
 
 **Refusal design — two layers.** Layer 1 is a similarity threshold, set to **0.69**,
 tuned from measured distractor scores rather than guessed. The initial 0.50 guess

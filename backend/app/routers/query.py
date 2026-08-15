@@ -110,29 +110,45 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
         threshold but still don't support an answer make the model itself refuse.
     """
     started = time.perf_counter()
-
-    # --- Layer 0: questions about the assistant itself, not the circulars ---
-    # "What can you do?" and "What circulars do you have?" are not questions
-    # about document contents, so retrieval scores them near 0.50-0.64 and the
-    # gate below correctly refuses them — which meant a newcomer's very first
-    # question got a flat refusal. Answered here instead, deterministically
-    # from the documents table, so the assistant can never claim a circular it
-    # does not hold. Runs before retrieval and never calls a model, so it
-    # leaves the two-layer refusal gate untouched.
-    intent = meta.detect_intent(request.question)
-    if intent is not None:
-        documents = await fetch_documents()
-        answer = meta.build_answer(intent, documents)
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        await _log_query(
-            request.question, answer, META_PROVIDER, latency_ms, None, 0.0, META_PROVIDER
-        )
-        return answer
-
     chunks, top_similarity = await retrieve_chunks(request.question)
 
     # --- Layer 1: deterministic threshold gate ---
     if top_similarity < SIMILARITY_THRESHOLD:
+        # Before refusing, check whether this is a question about the assistant
+        # itself — "what can you do?", "what circulars do you have?". Those are
+        # not questions about document *contents*, so they score 0.50-0.66 here
+        # and would otherwise get a flat refusal as a newcomer's first
+        # interaction. Answered deterministically from the documents table, so
+        # the assistant can never claim a circular it does not hold.
+        #
+        # Deliberately placed INSIDE the below-threshold branch rather than
+        # before retrieval, which is where it was first written and was wrong:
+        # ahead of retrieval it stole questions the documents could answer well.
+        # "MCX circular" (retrieval 0.77) and "22 Jul 2025 circular summary"
+        # (0.75) both matched a corpus-inventory phrasing and got a list of
+        # documents instead of an answer. Short, keyword-style queries embed
+        # weakly and drift toward the generic canonical phrasings, which a test
+        # set made only of well-formed questions never surfaced.
+        #
+        # Here, meta can only ever claim a question that was already going to be
+        # refused, so hijacking a real answer is structurally impossible rather
+        # than merely tuned against.
+        intent = meta.detect_intent(request.question)
+        if intent is not None:
+            documents = await fetch_documents()
+            answer = meta.build_answer(intent, documents)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            await _log_query(
+                request.question,
+                answer,
+                META_PROVIDER,
+                latency_ms,
+                None,
+                top_similarity,
+                META_PROVIDER,
+            )
+            return answer
+
         answer = ComplianceAnswer(
             answer=(
                 "I don't have sufficiently relevant material in this document set to answer that. "
