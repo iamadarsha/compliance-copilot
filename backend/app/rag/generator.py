@@ -76,9 +76,6 @@ _GEMINI_FATAL_MARKERS = (
 GROQ_PROVIDER = f"groq/{GROQ_MODEL}"
 GEMINI_PROVIDER = f"gemini/{GEMINI_MODEL}"
 
-# Kept for backwards compatibility with anything still importing MODEL.
-MODEL = GROQ_MODEL
-
 MAX_RETRIES = 2
 
 # Bounds a hung provider call so it surfaces as a GenerationError rather than
@@ -486,9 +483,3 @@ async def generate(question: str, chunks: list[dict]) -> GenerationResult:
             raise
         logger.info("Fallback provider %s served the request", GROQ_PROVIDER)
         return GenerationResult(_enforce_citation_consistency(answer), GROQ_PROVIDER)
-
-
-async def generate_answer(question: str, chunks: list[dict]) -> ComplianceAnswer:
-    """Backwards-compatible wrapper returning just the answer."""
-    result = await generate(question, chunks)
-    return result.answer

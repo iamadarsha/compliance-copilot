@@ -19,8 +19,9 @@ that you say so; this is that disclosure.
 ## Setup
 
 Copy `backend/.env.example` to `backend/.env` and `frontend/.env.local.example` to
-`frontend/.env.local`, filling in `GROQ_API_KEY`, then run `docker compose up` from the
-project root. This starts Postgres (pgvector) on `5432`, the FastAPI backend on `8000`,
+`frontend/.env.local`, filling in `GROQ_API_KEY` and `GEMINI_API_KEY` (both required —
+generation is Gemini-primary with Groq as fallback, so the fallback needs its own key
+too), then run `docker compose up` from the project root. This starts Postgres (pgvector) on `5432`, the FastAPI backend on `8000`,
 and the Next.js frontend on `3000`. Once up, `POST /ingest` loads the five markdown
 circulars in `backend/docs/` into the database (5 documents → 33 chunks). The eval
 harness runs with `docker compose exec backend python -m eval.run_eval`.
@@ -40,8 +41,10 @@ criteria roughly in the order the brief lists them.
   (links above), which is not required but removes any doubt.
 - **Eval, from that same fresh clone**: 6/6 retrieval hit rate, 6/6 citation accuracy,
   9/10 refusal accuracy on a 10-question set (4 deliberately unanswerable). Layer-1
-  threshold refusals run ~565x faster than a generated answer, at zero token cost.
-  Full output in `backend/eval/`.
+  threshold refusals run ~95x faster than a generated answer, at zero token cost —
+  down from an earlier ~565x measured before Phase 6 made Gemini, not Groq, the
+  primary generator; Gemini answers in ~2s where Groq averaged ~11s. Full output in
+  `backend/eval/`.
 - **Refuses rather than fabricates**, and the eval measures this rather than asserting
   it — see the refusal-accuracy breakdown, which reports honestly even when a
   question is answered-but-hedged rather than formally refused.
@@ -60,8 +63,8 @@ criteria roughly in the order the brief lists them.
 
 The full pipeline is implemented end to end: **ingestion** (YAML frontmatter parsed
 straight into the `documents` table), **section-aware chunking**, **pgvector cosine
-retrieval**, a **two-layer refusal gate**, **Groq structured generation** via
-instructor + Pydantic, an **eval harness**, and a **Next.js frontend** rendering
+retrieval**, a **two-layer refusal gate**, **structured generation** (Gemini primary,
+Groq fallback) via instructor + Pydantic, an **eval harness**, and a **Next.js frontend** rendering
 answers with citation chips and a confidence badge.
 
 ### What was left out
@@ -100,9 +103,12 @@ A section's letter only compounds onto its clauses when numbering restarts at 1 
 it (as in the NSE annexure's sections A–J). Getting this wrong would have produced
 confidently mis-attributed citations, which is worse than none.
 
-**Models.** Generation uses Groq `llama-3.3-70b-versatile`. Embeddings are local
-`sentence-transformers` (`bge-small-en-v1.5`, 384 dims) because **Groq has no
-embeddings endpoint** — that constraint, not preference, drove the split.
+**Models.** Generation is Gemini-primary with a Groq fallback (`llama-3.3-70b-versatile`)
+— see "Provider failover" below for the full design; Groq was the original
+single-provider choice. Embeddings are local `sentence-transformers`
+(`bge-small-en-v1.5`, 384 dims) because **Groq has no embeddings endpoint** — that
+constraint, not preference, drove the split, and it still holds regardless of which
+provider generates the answer.
 
 **Structured output.** instructor + Pydantic enforce the `ComplianceAnswer` schema.
 Worth naming the actual bug found here, because it is Groq-specific and genuinely
@@ -120,7 +126,8 @@ turned out to fire *never*: real adjacent-domain distractors ("capital gains tax
 answerable question scores 0.728, which is a hard ceiling — above it, real questions get
 blocked. That leaves a usable band of (0.651, 0.728); 0.69 sits in the middle. At that
 threshold, out-of-scope questions are refused in **31–139 ms at zero token cost**,
-against ~10.9 s average for a generated answer.
+against ~10.9 s average for a generated answer under Groq (Phase 5 baseline) — now
+~2.0 s under Gemini as primary generator (see "Provider failover" below).
 
 Layer 2 is the model's own refusal, and it is not a backstop — it is load-bearing.
 **No threshold can ever catch in-domain-but-unanswerable questions.** "What are the
@@ -189,13 +196,17 @@ knowing before assuming the next round of prompt iteration is always the
 right lever to pull.
 
 **Known limitation — citation scoping across issuers.** Asked "what is Milestone 2
-according to the MCX circular", the system returns the correct MCX provision (mock
-session by 3 January 2026) using MCX's own numbering rather than SEBI's — the important
-half works. But it still co-cites SEBI circular 2025/132 without flagging that *its*
-Milestone 2 is a different provision. Three prompt revisions did not resolve this. The
-untried fix is structural rather than more prompt text: add a `role` field to `Citation`
-(`"primary"` vs `"contrast"`) so the model must classify each citation's purpose, making
-an unexplained cross-issuer citation invalid by schema instead of merely discouraged.
+according to the MCX circular", Groq (the original single-provider generator) returns
+the correct MCX provision (mock session by 3 January 2026) using MCX's own numbering
+rather than SEBI's — the important half works. But it still co-cites SEBI circular
+2025/132 without flagging that *its* Milestone 2 is a different provision. Three
+prompt revisions did not resolve this on Groq. A `Citation.role` field was later built
+(see "overconfident specific-value answers" below) — but for a different failure mode:
+its guidance targets specific-value-vs-topic overconfidence, not cross-issuer scoping,
+so it was never validated as a fix here and shouldn't be read as one. What actually
+resolved this case is unrelated to that field: Gemini, now the primary generator (see
+"Provider failover" above), cites MCX alone across four runs with no cross-issuer
+co-citation at all — the model, not the schema, turned out to be the fix.
 
 **Known limitation — overconfident specific-value answers.** Of five genuine pre-fix
 responses to the password-complexity question, **two (40%)** asserted that generic
@@ -234,8 +245,6 @@ citation-scoping limitation above.
 
 - **Widen the distractor set before trusting 0.69.** It is tuned on n=2 out-of-domain
   questions. That is enough to prove 0.50 was wrong; not enough to pin the value.
-- **Structural citation-relevance check** (the `role` field above) rather than further
-  prompt iteration, which showed clear diminishing returns.
 - **Response caching keyed on the question, against the `queries` table.** This build
   hit the provider's daily token wall repeatedly; identical eval questions were
   re-generated dozens of times for no reason.
@@ -253,14 +262,18 @@ citation-scoping limitation above.
 
 ### AI tool usage
 
-Built with Claude Code across five phases, with a **reviewed checkpoint at each phase
-boundary** rather than one long autonomous run. That structure was the point: this
-assignment is graded on RAG judgment, and the checkpoints are what surfaced the
-`Mode.TOOLS` bug, a Docker Compose precedence bug that would have silently blanked the
-API key, and the eval scoring defect that reported a perfect score on a fully
-rate-limited run. Each of those would have shipped looking like success. Verification
-at every phase ran against the live stack — real ingestion, real queries, real database
-inspection — rather than assuming the code did what it claimed.
+Built with Claude Code across seven phases (five building the core pipeline, two
+adding provider failover and a citation-consistency refinement), with a **reviewed
+checkpoint at each phase boundary** rather than one long autonomous run. That
+structure was the point: this assignment is graded on RAG judgment, and the
+checkpoints are what surfaced the `Mode.TOOLS` bug, a Docker Compose precedence bug
+that would have silently blanked the API key, the eval scoring defect that reported
+a perfect score on a fully rate-limited run, and — during the failover work — a
+missing package extra that made every Gemini call silently fail over to Groq behind
+a fully correct-looking answer. Each of those would have shipped looking like
+success. Verification at every phase ran against the live stack — real ingestion,
+real queries, real database inspection — rather than assuming the code did what it
+claimed.
 
 Where it got in the way, honestly: Groq's free-tier daily token cap was hit
 repeatedly during both eval runs and deploy debugging, costing real time waiting on
