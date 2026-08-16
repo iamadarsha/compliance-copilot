@@ -33,6 +33,13 @@ The Next.js frontend holds no backend logic — every request that needs data or
 4. Post-generation, an answer claiming `refused=false` without a `primary` citation is
    downgraded to a cautious refusal rather than presented as confident.
 
+`/query` returns the answer plus how it was produced — `top_similarity`, `provider`,
+`refusal_reason`, `latency_ms` — via the `QueryResponse` model. These are deliberately
+*not* fields on `ComplianceAnswer`: that schema is what instructor enforces on the model,
+and asking an LLM to report its own retrieval score would be both meaningless and a
+fabrication risk. The values are computed server-side and were already being logged; the
+response and the UI simply surface them.
+
 ## Data model
 
 - `documents` — one row per source circular, mapping directly onto the YAML frontmatter (`doc_id`, `title`, `issuer`, `date`, `status`, `source`) of each markdown file in `backend/docs/`.

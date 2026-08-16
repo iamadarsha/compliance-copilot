@@ -5,6 +5,7 @@ import { useState } from "react";
 import AnswerCard, { type ComplianceAnswer } from "@/components/AnswerCard";
 import QueryBox, { type Prefill } from "@/components/QueryBox";
 import SourcesCard, { useIndexedDocuments } from "@/components/SourcesCard";
+import WakeUpGate from "@/components/WakeUpGate";
 
 type HistoryEntry = {
   id: number;
@@ -70,7 +71,7 @@ export default function Home() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
-  const docs = useIndexedDocuments();
+  const { docs, reload: reloadDocs } = useIndexedDocuments();
 
   function handleResult(question: string, result: ComplianceAnswer) {
     const entry: HistoryEntry = { id: Date.now(), question, result };
@@ -164,6 +165,12 @@ export default function Home() {
 
           <main className="w-full min-w-0 lg:w-[640px] lg:shrink-0">
             <QueryBox onResult={handleResult} prefill={prefill} />
+
+            {/* Cold-start status. Unmounts itself once the API answers and the
+                corpus is confirmed loaded, so it costs nothing on a warm visit. */}
+            <div className="mt-6 empty:mt-0">
+              <WakeUpGate onReady={reloadDocs} />
+            </div>
 
             <div className="mt-8">
             {selected ? (

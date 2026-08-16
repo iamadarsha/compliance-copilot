@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -75,6 +75,7 @@ function formatDate(iso: string): string {
 
 export function useIndexedDocuments() {
   const [docs, setDocs] = useState<IndexedDocument[]>([]);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!API_URL) return;
@@ -92,9 +93,16 @@ export function useIndexedDocuments() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
-  return docs;
+  // Re-fetch on demand. This exists because of a real failure: on a cold visit
+  // the first fetch runs while the backend is still asleep and fails, and
+  // without a retry the corpus panel and header count stayed empty for the rest
+  // of the session even after the backend came up — the app worked, but looked
+  // like it had no documents. WakeUpGate calls this once readiness is confirmed.
+  const reload = useCallback(() => setAttempt((n) => n + 1), []);
+
+  return { docs, reload };
 }
 
 export default function SourcesCard({ docs }: { docs: IndexedDocument[] }) {

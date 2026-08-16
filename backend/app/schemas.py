@@ -99,6 +99,40 @@ class ComplianceAnswer(BaseModel):
     )
 
 
+class QueryResponse(ComplianceAnswer):
+    """What `/query` returns: the model's answer plus how it was produced.
+
+    Deliberately a separate model rather than extra fields on ComplianceAnswer.
+    ComplianceAnswer is the schema instructor enforces on the *model* — adding
+    server-computed fields to it would ask the LLM to invent its own retrieval
+    score and latency, which is both nonsense and a fabrication risk.
+
+    These four values were already computed and written to the `queries` table
+    on every request; they were simply never returned. Surfacing them is what
+    makes the pipeline's behaviour checkable from outside: whether a refusal
+    came from the deterministic threshold or the model's own judgment, which
+    provider actually served the answer, and how close the retrieved material
+    was to the question.
+    """
+
+    top_similarity: float | None = Field(
+        default=None,
+        description="Cosine similarity of the best-matching chunk. None when retrieval was skipped.",
+    )
+    provider: str | None = Field(
+        default=None,
+        description=(
+            "What produced this answer: 'gemini/<model>', 'groq/<model>', or "
+            "'meta/deterministic'. None for a Layer-1 refusal, which never reaches a model."
+        ),
+    )
+    refusal_reason: str | None = Field(
+        default=None,
+        description="'below_threshold' (Layer 1), 'model_refused' (Layer 2), or None if answered.",
+    )
+    latency_ms: int | None = Field(default=None, description="Server-side time to produce this answer.")
+
+
 class QueryLogOut(BaseModel):
     id: int
     question: str

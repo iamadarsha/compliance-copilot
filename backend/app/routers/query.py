@@ -10,7 +10,29 @@ from app.db.session import get_pool
 from app.rag import generator, meta
 from app.rag.retriever import retrieve_chunks
 from app.routers.documents import fetch_documents
-from app.schemas import ComplianceAnswer, QueryRequest
+from app.schemas import ComplianceAnswer, QueryRequest, QueryResponse
+
+
+def _with_diagnostics(
+    answer: ComplianceAnswer,
+    *,
+    top_similarity: float | None,
+    provider: str | None,
+    refusal_reason: str | None,
+    latency_ms: int,
+) -> QueryResponse:
+    """Attach how-it-was-produced metadata to an answer for the response body.
+
+    Same values already written to the `queries` table — returned as well so the
+    behaviour is checkable from the client without database access.
+    """
+    return QueryResponse(
+        **answer.model_dump(),
+        top_similarity=round(top_similarity, 4) if top_similarity is not None else None,
+        provider=provider,
+        refusal_reason=refusal_reason,
+        latency_ms=latency_ms,
+    )
 
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -99,8 +121,8 @@ async def _log_generation_failure(
     await _insert_query(question, payload, model, latency_ms)
 
 
-@router.post("", response_model=ComplianceAnswer)
-async def query(request: QueryRequest) -> ComplianceAnswer:
+@router.post("", response_model=QueryResponse)
+async def query(request: QueryRequest) -> QueryResponse:
     """Answer a question by retrieving relevant chunks and generating a cited response.
 
     Two-layer refusal gate:
@@ -147,7 +169,13 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
                 top_similarity,
                 META_PROVIDER,
             )
-            return answer
+            return _with_diagnostics(
+                answer,
+                top_similarity=top_similarity,
+                provider=META_PROVIDER,
+                refusal_reason=None,
+                latency_ms=latency_ms,
+            )
 
         answer = ComplianceAnswer(
             answer=(
@@ -165,7 +193,13 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
         await _log_query(
             request.question, answer, None, latency_ms, REFUSAL_BELOW_THRESHOLD, top_similarity
         )
-        return answer
+        return _with_diagnostics(
+            answer,
+            top_similarity=top_similarity,
+            provider=None,
+            refusal_reason=REFUSAL_BELOW_THRESHOLD,
+            latency_ms=latency_ms,
+        )
 
     # --- Layer 2: model-level grounding and refusal ---
     # generate() tries Gemini, then falls back to Groq on a provider fault only;
@@ -209,4 +243,10 @@ async def query(request: QueryRequest) -> ComplianceAnswer:
         top_similarity,
         provider,
     )
-    return answer
+    return _with_diagnostics(
+        answer,
+        top_similarity=top_similarity,
+        provider=provider,
+        refusal_reason=refusal_reason,
+        latency_ms=latency_ms,
+    )

@@ -79,6 +79,20 @@ skips the model entirely for out-of-scope questions. **Layer 2** is the model's 
 judgment, and it is load-bearing rather than a backstop — no threshold can catch a
 question that is *in-domain but unanswerable*.
 
+**Every answer shows its own working.** Each response carries the retrieval score that
+decided whether a model was called at all, which refusal layer fired, which provider
+actually served it, and end-to-end latency — collapsed under "How this answer was
+produced". These were computed and logged on every request from the start; surfacing them
+means the claims on this page are checkable in the UI rather than taken on trust. A
+refusal shows `Layer 1 · similarity threshold, no model called` next to the score that
+caused it; an answer shows whether Gemini or the Groq fallback produced it.
+
+**Cold starts are shown, not hidden.** The deployed backend sleeps after 15 minutes idle,
+so a first visit can wait ~50s. Rather than an ambiguous spinner, the app polls two *real*
+checkpoints — the API answering `/health`, then `/documents` returning a non-empty corpus —
+and shows elapsed time with a progress bar that is explicit about being an estimate between
+those checkpoints. It never reports 100% on a guess; only confirmed readiness dismisses it.
+
 ---
 
 ## Results
